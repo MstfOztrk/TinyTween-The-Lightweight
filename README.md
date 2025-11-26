@@ -36,6 +36,8 @@ Jump: Parabolic jumping movement.
 
 Punch: Elastic vibration effect for Position or Scale.
 
+Delay: Wait before starting the animation.
+
 Loops:
 
 Restart: Restart from beginning.
@@ -59,6 +61,13 @@ Jump & Easing
 // Jump 5 units forward, 2 units high, 3 bounces
 transform.TJump(targetPos, 1f, 2f, 3)
          .SetEase(TinyEaseType.OutBounce);
+
+
+Delayed Start
+
+// Wait for 0.5 seconds, then move
+transform.TMove(targetPos, 1f)
+         .SetDelay(0.5f);
 
 
 Punch (Shake Effect)
