@@ -41,6 +41,7 @@ namespace TinyTween
         public Vector3 startPos;
         public Vector3 endPos;
         public float duration;
+        public float delay;
         public float elapsed;
         public bool useLocal;
         public TinyTweenType type;
@@ -59,6 +60,7 @@ namespace TinyTween
             onComplete = null;
             isCompleted = false;
             elapsed = 0f;
+            delay = 0f;
             loops = 0;
             loopType = TinyLoopType.Restart;
             easeType = TinyEaseType.Linear;
@@ -93,6 +95,15 @@ namespace TinyTween
             if (IsValid)
             {
                 tween.easeType = ease;
+            }
+            return this;
+        }
+
+        public TinyTweenHandle SetDelay(float delay)
+        {
+            if (IsValid)
+            {
+                tween.delay = delay;
             }
             return this;
         }
@@ -144,6 +155,7 @@ namespace TinyTween
             tween.jumpCount = jumpCount;
             tween.punch = punchVector;
             tween.elapsed = 0f;
+            tween.delay = 0f;
             tween.isCompleted = false;
             tween.loops = 0;
             tween.loopType = TinyLoopType.Restart;
@@ -263,17 +275,22 @@ namespace TinyTween
                 }
 
                 tween.elapsed += deltaTime;
-                float rawProgress = tween.duration <= 0 ? 1 : tween.elapsed / tween.duration;
-                if (rawProgress > 1f) rawProgress = 1f;
 
-                float k = EvaluateEase(tween.easeType, rawProgress);
+                float activeTime = tween.elapsed - tween.delay;
+                float progress = tween.duration <= 0 ? 1 : activeTime / tween.duration;
+                
+                if (progress < 0) progress = 0;
+                if (progress > 1f) progress = 1f;
+
+                float k = EvaluateEase(tween.easeType, progress);
 
                 if (tween.type == TinyTweenType.PunchScale)
                 {
                     float punchTime = k * tween.jumpCount * PI * 2f;
                     float decay = 1f - k;
+                    float finalDecay = decay * decay * decay;
                     
-                    Vector3 punchVal = tween.punch * (Mathf.Sin(punchTime) * decay);
+                    Vector3 punchVal = tween.punch * (Mathf.Sin(punchTime) * finalDecay);
                     tween.target.localScale = tween.startPos + punchVal;
                 }
                 else
@@ -293,14 +310,15 @@ namespace TinyTween
                     {
                         float punchTime = k * tween.jumpCount * PI * 2f;
                         float decay = 1f - k;
-                        result += tween.punch * (Mathf.Sin(punchTime) * decay);
+                        float finalDecay = decay * decay * decay;
+                        result += tween.punch * (Mathf.Sin(punchTime) * finalDecay);
                     }
 
                     if (tween.useLocal) tween.target.localPosition = result;
                     else tween.target.position = result;
                 }
 
-                if (rawProgress >= 1f)
+                if (progress >= 1f)
                 {
                     bool loopFinished = false;
 
@@ -408,6 +426,7 @@ namespace TinyTween
         public static void Complete(this TinyTweenHandle handle) => handle.Complete();
         public static TinyTweenHandle SetLoops(this TinyTweenHandle handle, int loops, TinyLoopType type) => handle.SetLoops(loops, type);
         public static TinyTweenHandle SetEase(this TinyTweenHandle handle, TinyEaseType ease) => handle.SetEase(ease);
+        public static TinyTweenHandle SetDelay(this TinyTweenHandle handle, float delay) => handle.SetDelay(delay);
         public static TinyTweenHandle OnComplete(this TinyTweenHandle handle, Action callback) => handle.OnComplete(callback);
     }
 }
