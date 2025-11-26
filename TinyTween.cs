@@ -9,7 +9,8 @@ namespace TinyTween
         Move,
         Jump,
         Punch,
-        PunchScale
+        PunchScale,
+        CustomFloat
     }
 
     public enum TinyLoopType
@@ -44,6 +45,7 @@ namespace TinyTween
         public float delay;
         public float elapsed;
         public bool useLocal;
+        public bool useUnscaledTime;
         public TinyTweenType type;
         public TinyEaseType easeType;
         public float jumpHeight;
@@ -53,17 +55,24 @@ namespace TinyTween
         public int loops;
         public TinyLoopType loopType;
         public Action onComplete;
+        public Action<float> onUpdate;
 
         public void Reset()
         {
             target = null;
             onComplete = null;
+            onUpdate = null;
             isCompleted = false;
             elapsed = 0f;
             delay = 0f;
-            loops = 0;
+            loops = 1;
             loopType = TinyLoopType.Restart;
             easeType = TinyEaseType.Linear;
+            useLocal = false;
+            useUnscaledTime = false;
+            jumpHeight = 0;
+            jumpCount = 0;
+            punch = Vector3.zero;
         }
     }
 
@@ -80,10 +89,22 @@ namespace TinyTween
 
         public bool IsValid => tween != null && tween.uniqueId == id && !tween.isCompleted;
 
+        internal float GetTotalDuration()
+        {
+            if (!IsValid) return 0f;
+            if (tween.loops == -1) return float.MaxValue;
+            return tween.duration * tween.loops;
+        }
+
+        internal float GetDelay() => IsValid ? tween.delay : 0f;
+
         public TinyTweenHandle SetLoops(int loops, TinyLoopType loopType = TinyLoopType.Restart)
         {
             if (IsValid)
             {
+                if (loops < -1) loops = 1;
+                if (loops == 0) loops = 1;
+
                 tween.loops = loops;
                 tween.loopType = loopType;
             }
@@ -92,19 +113,19 @@ namespace TinyTween
 
         public TinyTweenHandle SetEase(TinyEaseType ease)
         {
-            if (IsValid)
-            {
-                tween.easeType = ease;
-            }
+            if (IsValid) tween.easeType = ease;
             return this;
         }
 
         public TinyTweenHandle SetDelay(float delay)
         {
-            if (IsValid)
-            {
-                tween.delay = delay;
-            }
+            if (IsValid) tween.delay = delay;
+            return this;
+        }
+
+        public TinyTweenHandle SetIgnoreTimeScale(bool ignore)
+        {
+            if (IsValid) tween.useUnscaledTime = ignore;
             return this;
         }
 
@@ -114,18 +135,74 @@ namespace TinyTween
             return this;
         }
 
+        public TinyTweenHandle OnUpdate(Action<float> callback)
+        {
+            if (IsValid) tween.onUpdate += callback;
+            return this;
+        }
+
         public void Kill() => TinyTweenRunner.Instance.KillTween(tween);
         public void Complete() => TinyTweenRunner.Instance.CompleteTween(tween);
     }
 
+    public struct TinySequence
+    {
+        private float _cursor;
+        private float _prevCursor;
+
+        public TinySequence Append(TinyTweenHandle handle)
+        {
+            if (!handle.IsValid) return this;
+
+            float currentDelay = handle.GetDelay();
+            float duration = handle.GetTotalDuration();
+
+            handle.SetDelay(_cursor + currentDelay);
+
+            _prevCursor = _cursor;
+            _cursor += duration + currentDelay;
+
+            return this;
+        }
+
+        public TinySequence Join(TinyTweenHandle handle)
+        {
+            if (!handle.IsValid) return this;
+
+            float currentDelay = handle.GetDelay();
+            float duration = handle.GetTotalDuration();
+
+            handle.SetDelay(_prevCursor + currentDelay);
+
+            float end = _prevCursor + currentDelay + duration;
+            if (end > _cursor) _cursor = end;
+
+            return this;
+        }
+
+        public TinySequence AppendInterval(float interval)
+        {
+            _prevCursor = _cursor;
+            _cursor += interval;
+            return this;
+        }
+    }
+
+    [DefaultExecutionOrder(-100)]
     public sealed class TinyTweenRunner : MonoBehaviour
     {
         static TinyTweenRunner instance;
-        readonly List<TinyTweenInstance> activeTweens = new List<TinyTweenInstance>(1024);
-        readonly Stack<TinyTweenInstance> pool = new Stack<TinyTweenInstance>(1024);
+        readonly List<TinyTweenInstance> activeTweens = new List<TinyTweenInstance>(512);
+        readonly Stack<TinyTweenInstance> pool = new Stack<TinyTweenInstance>(512);
         long globalIdCounter = 0;
         const float PI = Mathf.PI;
         const float HPI = Mathf.PI / 2f;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        static void Init()
+        {
+            instance = null;
+        }
 
         public static TinyTweenRunner Instance
         {
@@ -144,7 +221,8 @@ namespace TinyTween
         internal TinyTweenHandle StartTween(Transform target, Vector3 startValue, Vector3 endValue, float duration, TinyTweenType type, bool useLocal, float jumpHeight = 0, int jumpCount = 0, Vector3 punchVector = default)
         {
             TinyTweenInstance tween = pool.Count > 0 ? pool.Pop() : new TinyTweenInstance();
-            
+            tween.Reset();
+
             tween.uniqueId = ++globalIdCounter;
             tween.target = target;
             tween.endPos = endValue;
@@ -154,16 +232,10 @@ namespace TinyTween
             tween.jumpHeight = jumpHeight;
             tween.jumpCount = jumpCount;
             tween.punch = punchVector;
-            tween.elapsed = 0f;
-            tween.delay = 0f;
-            tween.isCompleted = false;
-            tween.loops = 0;
-            tween.loopType = TinyLoopType.Restart;
-            tween.easeType = TinyEaseType.Linear;
 
             if (type == TinyTweenType.PunchScale)
             {
-                tween.startPos = target.localScale;
+                if (target != null) tween.startPos = target.localScale;
             }
             else
             {
@@ -182,7 +254,7 @@ namespace TinyTween
 
         internal void KillTween(TinyTweenInstance tween)
         {
-            if (tween != null) tween.isCompleted = true; 
+            if (tween != null) tween.isCompleted = true;
         }
 
         internal void CompleteTween(TinyTweenInstance tween)
@@ -190,13 +262,13 @@ namespace TinyTween
             if (tween == null || tween.isCompleted) return;
             
             ApplyFinalPosition(tween);
-            tween.onComplete?.Invoke();
             tween.isCompleted = true;
+            tween.onComplete?.Invoke();
         }
 
         void ApplyFinalPosition(TinyTweenInstance tween)
         {
-            if (tween.target == null) return;
+            if (tween.target == null && tween.type != TinyTweenType.CustomFloat) return;
 
             if (tween.type == TinyTweenType.PunchScale)
             {
@@ -216,8 +288,11 @@ namespace TinyTween
                     break;
             }
 
-            if (tween.useLocal) tween.target.localPosition = finalPos;
-            else tween.target.position = finalPos;
+            if (tween.target != null)
+            {
+                if (tween.useLocal) tween.target.localPosition = finalPos;
+                else tween.target.position = finalPos;
+            }
         }
 
         float EvaluateEase(TinyEaseType ease, float t)
@@ -261,76 +336,101 @@ namespace TinyTween
 
         void Update()
         {
-            float deltaTime = Time.deltaTime;
             int count = activeTweens.Count;
+            if (count == 0) return;
+
+            float dt = Time.deltaTime;
+            float unscaledDt = Time.unscaledDeltaTime;
 
             for (int i = count - 1; i >= 0; i--)
             {
                 var tween = activeTweens[i];
 
-                if (tween.isCompleted || tween.target == null)
+                if (tween.isCompleted || (tween.target == null && tween.type != TinyTweenType.CustomFloat))
                 {
                     RemoveAtSwapBack(i, tween);
                     continue;
                 }
 
-                tween.elapsed += deltaTime;
+                float currentDt = tween.useUnscaledTime ? unscaledDt : dt;
+                tween.elapsed += currentDt;
 
                 float activeTime = tween.elapsed - tween.delay;
-                float progress = tween.duration <= 0 ? 1 : activeTime / tween.duration;
+                float progress;
                 
-                if (progress < 0) progress = 0;
-                if (progress > 1f) progress = 1f;
-
-                float k = EvaluateEase(tween.easeType, progress);
-
-                if (tween.type == TinyTweenType.PunchScale)
+                if (tween.duration <= 0f)
                 {
-                    float punchTime = k * tween.jumpCount * PI * 2f;
-                    float decay = 1f - k;
-                    float finalDecay = decay * decay * decay;
-                    
-                    Vector3 punchVal = tween.punch * (Mathf.Sin(punchTime) * finalDecay);
-                    tween.target.localScale = tween.startPos + punchVal;
+                    progress = activeTime >= 0f ? 1f : 0f;
                 }
                 else
                 {
-                    Vector3 result = tween.startPos;
-                    if (tween.type == TinyTweenType.Move)
-                    {
-                        result = Vector3.LerpUnclamped(tween.startPos, tween.endPos, k);
-                    }
-                    else if (tween.type == TinyTweenType.Jump)
-                    {
-                        result = Vector3.LerpUnclamped(tween.startPos, tween.endPos, k);
-                        float jumpProgress = k * tween.jumpCount * PI;
-                        if(k < 1f) result.y += Mathf.Sin(jumpProgress) * tween.jumpHeight;
-                    }
-                    else if (tween.type == TinyTweenType.Punch)
+                    progress = activeTime / tween.duration;
+                }
+                
+                progress = Mathf.Clamp01(progress);
+
+                float k = EvaluateEase(tween.easeType, progress);
+
+                tween.onUpdate?.Invoke(k);
+
+                if (tween.target != null)
+                {
+                    if (tween.type == TinyTweenType.PunchScale)
                     {
                         float punchTime = k * tween.jumpCount * PI * 2f;
                         float decay = 1f - k;
                         float finalDecay = decay * decay * decay;
-                        result += tween.punch * (Mathf.Sin(punchTime) * finalDecay);
+                        
+                        Vector3 punchVal = tween.punch * (Mathf.Sin(punchTime) * finalDecay);
+                        tween.target.localScale = tween.startPos + punchVal;
                     }
+                    else
+                    {
+                        Vector3 result = tween.startPos;
+                        if (tween.type == TinyTweenType.Move)
+                        {
+                            result = Vector3.LerpUnclamped(tween.startPos, tween.endPos, k);
+                        }
+                        else if (tween.type == TinyTweenType.Jump)
+                        {
+                            result = Vector3.LerpUnclamped(tween.startPos, tween.endPos, k);
+                            float jumpProgress = k * tween.jumpCount * PI;
+                            if(k < 1f) result.y += Mathf.Sin(jumpProgress) * tween.jumpHeight;
+                        }
+                        else if (tween.type == TinyTweenType.Punch)
+                        {
+                            float punchTime = k * tween.jumpCount * PI * 2f;
+                            float decay = 1f - k;
+                            float finalDecay = decay * decay * decay;
+                            result += tween.punch * (Mathf.Sin(punchTime) * finalDecay);
+                        }
 
-                    if (tween.useLocal) tween.target.localPosition = result;
-                    else tween.target.position = result;
+                        if (tween.useLocal) tween.target.localPosition = result;
+                        else tween.target.position = result;
+                    }
                 }
 
                 if (progress >= 1f)
                 {
                     bool loopFinished = false;
 
-                    if (tween.loops == 0)
+                    if (tween.loops == -1) 
                     {
-                        loopFinished = true;
+                        loopFinished = false; 
+                    }
+                    else if (tween.loops > 1) 
+                    {
+                        tween.loops--;
+                        loopFinished = false;
                     }
                     else
                     {
-                        if (tween.loops > 0) tween.loops--;
+                        loopFinished = true;
+                    }
 
-                        tween.elapsed = 0f;
+                    if (!loopFinished)
+                    {
+                        tween.elapsed = tween.delay;
 
                         if (tween.type != TinyTweenType.Punch && tween.type != TinyTweenType.PunchScale)
                         {
@@ -348,11 +448,11 @@ namespace TinyTween
                             }
                         }
                     }
-
-                    if (loopFinished)
+                    else
                     {
                         ApplyFinalPosition(tween);
                         tween.isCompleted = true;
+                        
                         var callback = tween.onComplete;
                         RemoveAtSwapBack(i, tween);
                         callback?.Invoke();
@@ -364,12 +464,7 @@ namespace TinyTween
         private void RemoveAtSwapBack(int index, TinyTweenInstance tween)
         {
             int lastIndex = activeTweens.Count - 1;
-            
-            if (index < lastIndex)
-            {
-                activeTweens[index] = activeTweens[lastIndex];
-            }
-            
+            if (index < lastIndex) activeTweens[index] = activeTweens[lastIndex];
             activeTweens.RemoveAt(lastIndex);
             Despawn(tween);
         }
@@ -377,6 +472,8 @@ namespace TinyTween
 
     public static class TinyTweener
     {
+        public static TinySequence Sequence() => new TinySequence();
+
         public static TinyTweenHandle Move(Transform target, Vector3 startValue, Vector3 endValue, float duration, bool useLocal = false)
             => TinyTweenRunner.Instance.StartTween(target, startValue, endValue, duration, TinyTweenType.Move, useLocal);
 
@@ -393,7 +490,17 @@ namespace TinyTween
             => TinyTweenRunner.Instance.StartTween(target, useLocal ? target.localPosition : target.position, Vector3.zero, duration, TinyTweenType.Punch, useLocal, 0, vibrato, punchVector);
 
         public static TinyTweenHandle PunchScale(Transform target, Vector3 punchVector, float duration, int vibrato = 3)
-            => TinyTweenRunner.Instance.StartTween(target, Vector3.zero, Vector3.zero, duration, TinyTweenType.PunchScale, false, 0, vibrato, punchVector);
+            => TinyTweenRunner.Instance.StartTween(target, Vector3.zero, Vector3.zero, duration, TinyTweenType.PunchScale, true, 0, vibrato, punchVector);
+            
+        public static TinyTweenHandle Float(float from, float to, float duration, Action<float> onUpdate)
+        {
+            var handle = TinyTweenRunner.Instance.StartTween(null, new Vector3(from, 0, 0), new Vector3(to, 0, 0), duration, TinyTweenType.CustomFloat, false);
+            handle.OnUpdate((val) => {
+                float lerpedVal = Mathf.LerpUnclamped(from, to, val);
+                onUpdate?.Invoke(lerpedVal);
+            });
+            return handle;
+        }
     }
 
     public static class TinyTweenExtensions
@@ -419,14 +526,13 @@ namespace TinyTween
         public static TinyTweenHandle TPunchScale(this Transform target, Vector3 punchVector, float duration, int vibrato = 3) 
             => TinyTweener.PunchScale(target, punchVector, duration, vibrato);
 
-        public static TinyTweenHandle TLocalPunchScale(this Transform target, Vector3 punchVector, float duration, int vibrato = 3) 
-            => TinyTweener.PunchScale(target, punchVector, duration, vibrato);
-
         public static void Kill(this TinyTweenHandle handle) => handle.Kill();
         public static void Complete(this TinyTweenHandle handle) => handle.Complete();
         public static TinyTweenHandle SetLoops(this TinyTweenHandle handle, int loops, TinyLoopType type) => handle.SetLoops(loops, type);
         public static TinyTweenHandle SetEase(this TinyTweenHandle handle, TinyEaseType ease) => handle.SetEase(ease);
         public static TinyTweenHandle SetDelay(this TinyTweenHandle handle, float delay) => handle.SetDelay(delay);
+        public static TinyTweenHandle SetIgnoreTimeScale(this TinyTweenHandle handle, bool ignore) => handle.SetIgnoreTimeScale(ignore);
         public static TinyTweenHandle OnComplete(this TinyTweenHandle handle, Action callback) => handle.OnComplete(callback);
+        public static TinyTweenHandle OnUpdate(this TinyTweenHandle handle, Action<float> callback) => handle.OnUpdate(callback);
     }
 }
