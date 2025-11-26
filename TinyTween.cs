@@ -78,7 +78,7 @@ namespace TinyTween
 
     public readonly struct TinyTweenHandle
     {
-        private readonly TinyTweenInstance tween;
+        internal readonly TinyTweenInstance tween;
         private readonly long id;
 
         internal TinyTweenHandle(TinyTweenInstance tween)
@@ -373,6 +373,11 @@ namespace TinyTween
 
                 tween.onUpdate?.Invoke(k);
 
+                if (tween.isCompleted) 
+                {
+                    continue; 
+                }
+
                 if (tween.target != null)
                 {
                     if (tween.type == TinyTweenType.PunchScale)
@@ -495,8 +500,10 @@ namespace TinyTween
         public static TinyTweenHandle Float(float from, float to, float duration, Action<float> onUpdate)
         {
             var handle = TinyTweenRunner.Instance.StartTween(null, new Vector3(from, 0, 0), new Vector3(to, 0, 0), duration, TinyTweenType.CustomFloat, false);
-            handle.OnUpdate((val) => {
-                float lerpedVal = Mathf.LerpUnclamped(from, to, val);
+            
+            var tw = handle.tween;
+            handle.OnUpdate((k) => {
+                float lerpedVal = Mathf.LerpUnclamped(tw.startPos.x, tw.endPos.x, k);
                 onUpdate?.Invoke(lerpedVal);
             });
             return handle;
