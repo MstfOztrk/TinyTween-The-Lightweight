@@ -146,8 +146,21 @@ namespace TinyTween
             return this;
         }
 
-        public void Kill() => TinyTweenRunner.Instance.KillTween(tween);
-        public void Complete() => TinyTweenRunner.Instance.CompleteTween(tween);
+        public void Kill()
+        {
+            if (tween != null && tween.uniqueId == id)
+            {
+                TinyTweenRunner.Instance.KillTween(tween);
+            }
+        }
+
+        public void Complete()
+        {
+            if (tween != null && tween.uniqueId == id)
+            {
+                TinyTweenRunner.Instance.CompleteTween(tween);
+            }
+        }
     }
 
     public struct TinySequence
