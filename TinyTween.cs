@@ -103,6 +103,44 @@ namespace TinyTween
 
         internal float GetDelay() => IsValid ? tween.delay : 0f;
 
+        public TinyTweenHandle SetSpeedBased()
+        {
+            if (IsValid)
+            {
+                float speed = tween.duration;
+                if (speed <= 0f) return this;
+
+                float distance = 0f;
+
+                switch (tween.type)
+                {
+                    case TinyTweenType.Move:
+                    case TinyTweenType.Jump:
+                        distance = Vector3.Distance(tween.startPos, tween.endPos);
+                        break;
+                    case TinyTweenType.Rotate:
+                        distance = Quaternion.Angle(tween.startRot, tween.endRot);
+                        break;
+                    case TinyTweenType.CustomFloat:
+                        distance = Mathf.Abs(tween.endPos.x - tween.startPos.x);
+                        break;
+                    case TinyTweenType.Punch:
+                    case TinyTweenType.PunchScale:
+                        return this; 
+                }
+
+                if (distance > 0f)
+                {
+                    tween.duration = distance / speed;
+                }
+                else
+                {
+                    tween.duration = 0f;
+                }
+            }
+            return this;
+        }
+
         public TinyTweenHandle SetLoops(int loops, TinyLoopType loopType = TinyLoopType.Restart)
         {
             if (IsValid)
@@ -642,6 +680,7 @@ namespace TinyTween
         public static TinyTweenHandle SetLoops(this TinyTweenHandle handle, int loops, TinyLoopType type) => handle.SetLoops(loops, type);
         public static TinyTweenHandle SetEase(this TinyTweenHandle handle, TinyEaseType ease) => handle.SetEase(ease);
         public static TinyTweenHandle SetDelay(this TinyTweenHandle handle, float delay) => handle.SetDelay(delay);
+        public static TinyTweenHandle SetSpeedBased(this TinyTweenHandle handle) => handle.SetSpeedBased();
         public static TinyTweenHandle SetIgnoreTimeScale(this TinyTweenHandle handle, bool ignore) => handle.SetIgnoreTimeScale(ignore);
         public static TinyTweenHandle OnComplete(this TinyTweenHandle handle, Action callback) => handle.OnComplete(callback);
         public static TinyTweenHandle OnUpdate(this TinyTweenHandle handle, Action<float> callback) => handle.OnUpdate(callback);
