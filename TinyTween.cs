@@ -7,6 +7,7 @@ namespace TinyTween
     public enum TinyTweenType
     {
         Move,
+        Rotate,
         Jump,
         Punch,
         PunchScale,
@@ -41,6 +42,8 @@ namespace TinyTween
         public Transform target;
         public Vector3 startPos;
         public Vector3 endPos;
+        public Quaternion startRot;
+        public Quaternion endRot;
         public float duration;
         public float delay;
         public float elapsed;
@@ -73,6 +76,8 @@ namespace TinyTween
             jumpHeight = 0;
             jumpCount = 0;
             punch = Vector3.zero;
+            startRot = Quaternion.identity;
+            endRot = Quaternion.identity;
         }
     }
 
@@ -218,7 +223,7 @@ namespace TinyTween
             }
         }
 
-        internal TinyTweenHandle StartTween(Transform target, Vector3 startValue, Vector3 endValue, float duration, TinyTweenType type, bool useLocal, float jumpHeight = 0, int jumpCount = 0, Vector3 punchVector = default)
+        internal TinyTweenHandle StartTween(Transform target, Vector3 startValue, Vector3 endValue, Quaternion startRot, Quaternion endRot, float duration, TinyTweenType type, bool useLocal, float jumpHeight = 0, int jumpCount = 0, Vector3 punchVector = default)
         {
             TinyTweenInstance tween = pool.Count > 0 ? pool.Pop() : new TinyTweenInstance();
             tween.Reset();
@@ -226,6 +231,8 @@ namespace TinyTween
             tween.uniqueId = ++globalIdCounter;
             tween.target = target;
             tween.endPos = endValue;
+            tween.startRot = startRot;
+            tween.endRot = endRot;
             tween.duration = duration;
             tween.type = type;
             tween.useLocal = useLocal;
@@ -236,6 +243,9 @@ namespace TinyTween
             if (type == TinyTweenType.PunchScale)
             {
                 if (target != null) tween.startPos = target.localScale;
+            }
+            else if (type == TinyTweenType.Rotate)
+            {
             }
             else
             {
@@ -277,11 +287,16 @@ namespace TinyTween
             }
 
             Vector3 finalPos = tween.startPos;
+            Quaternion finalRot = tween.startRot;
+
             switch (tween.type)
             {
                 case TinyTweenType.Move:
                 case TinyTweenType.Jump:
                     finalPos = tween.endPos;
+                    break;
+                case TinyTweenType.Rotate:
+                    finalRot = tween.endRot;
                     break;
                 case TinyTweenType.Punch:
                     finalPos = tween.startPos;
@@ -290,8 +305,16 @@ namespace TinyTween
 
             if (tween.target != null)
             {
-                if (tween.useLocal) tween.target.localPosition = finalPos;
-                else tween.target.position = finalPos;
+                if (tween.type == TinyTweenType.Rotate)
+                {
+                    if (tween.useLocal) tween.target.localRotation = finalRot;
+                    else tween.target.rotation = finalRot;
+                }
+                else
+                {
+                    if (tween.useLocal) tween.target.localPosition = finalPos;
+                    else tween.target.position = finalPos;
+                }
             }
         }
 
@@ -380,7 +403,13 @@ namespace TinyTween
 
                 if (tween.target != null)
                 {
-                    if (tween.type == TinyTweenType.PunchScale)
+                    if (tween.type == TinyTweenType.Rotate)
+                    {
+                        Quaternion result = Quaternion.SlerpUnclamped(tween.startRot, tween.endRot, k);
+                        if (tween.useLocal) tween.target.localRotation = result;
+                        else tween.target.rotation = result;
+                    }
+                    else if (tween.type == TinyTweenType.PunchScale)
                     {
                         float punchTime = k * tween.jumpCount * PI * 2f;
                         float decay = 1f - k;
@@ -437,7 +466,22 @@ namespace TinyTween
                     {
                         tween.elapsed = tween.delay;
 
-                        if (tween.type != TinyTweenType.Punch && tween.type != TinyTweenType.PunchScale)
+                        if (tween.type == TinyTweenType.Rotate)
+                        {
+                            if (tween.loopType == TinyLoopType.Incremental)
+                            {
+                                Quaternion diff = tween.endRot * Quaternion.Inverse(tween.startRot);
+                                tween.startRot = tween.endRot;
+                                tween.endRot = tween.endRot * diff;
+                            }
+                            else if (tween.loopType == TinyLoopType.Yoyo)
+                            {
+                                Quaternion temp = tween.startRot;
+                                tween.startRot = tween.endRot;
+                                tween.endRot = temp;
+                            }
+                        }
+                        else if (tween.type != TinyTweenType.Punch && tween.type != TinyTweenType.PunchScale)
                         {
                             if (tween.loopType == TinyLoopType.Incremental)
                             {
@@ -480,26 +524,49 @@ namespace TinyTween
         public static TinySequence Sequence() => new TinySequence();
 
         public static TinyTweenHandle Move(Transform target, Vector3 startValue, Vector3 endValue, float duration, bool useLocal = false)
-            => TinyTweenRunner.Instance.StartTween(target, startValue, endValue, duration, TinyTweenType.Move, useLocal);
+            => TinyTweenRunner.Instance.StartTween(target, startValue, endValue, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Move, useLocal);
 
         public static TinyTweenHandle MoveTo(Transform target, Vector3 endValue, float duration, bool useLocal = false)
             => Move(target, useLocal ? target.localPosition : target.position, endValue, duration, useLocal);
 
+        public static TinyTweenHandle MoveBy(Transform target, Vector3 amount, float duration, bool useLocal = false)
+        {
+            Vector3 start = useLocal ? target.localPosition : target.position;
+            Vector3 end = start + amount;
+            return Move(target, start, end, duration, useLocal);
+        }
+
+        public static TinyTweenHandle Rotate(Transform target, Quaternion startValue, Quaternion endValue, float duration, bool useLocal = false)
+            => TinyTweenRunner.Instance.StartTween(target, Vector3.zero, Vector3.zero, startValue, endValue, duration, TinyTweenType.Rotate, useLocal);
+
+        public static TinyTweenHandle RotateTo(Transform target, Quaternion endValue, float duration, bool useLocal = false)
+            => Rotate(target, useLocal ? target.localRotation : target.rotation, endValue, duration, useLocal);
+
+        public static TinyTweenHandle RotateTo(Transform target, Vector3 endValue, float duration, bool useLocal = false)
+            => Rotate(target, useLocal ? target.localRotation : target.rotation, Quaternion.Euler(endValue), duration, useLocal);
+
+        public static TinyTweenHandle RotateBy(Transform target, Vector3 amount, float duration, bool useLocal = false)
+        {
+            Quaternion start = useLocal ? target.localRotation : target.rotation;
+            Quaternion end = start * Quaternion.Euler(amount); 
+            return Rotate(target, start, end, duration, useLocal);
+        }
+
         public static TinyTweenHandle Jump(Transform target, Vector3 startValue, Vector3 endValue, float height, int count, float duration, bool useLocal = false)
-            => TinyTweenRunner.Instance.StartTween(target, startValue, endValue, duration, TinyTweenType.Jump, useLocal, height, count);
+            => TinyTweenRunner.Instance.StartTween(target, startValue, endValue, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Jump, useLocal, height, count);
 
         public static TinyTweenHandle JumpTo(Transform target, Vector3 endValue, float height, int count, float duration, bool useLocal = false)
             => Jump(target, useLocal ? target.localPosition : target.position, endValue, height, count, duration, useLocal);
 
         public static TinyTweenHandle Punch(Transform target, Vector3 punchVector, float duration, int vibrato = 3, bool useLocal = false)
-            => TinyTweenRunner.Instance.StartTween(target, useLocal ? target.localPosition : target.position, Vector3.zero, duration, TinyTweenType.Punch, useLocal, 0, vibrato, punchVector);
+            => TinyTweenRunner.Instance.StartTween(target, useLocal ? target.localPosition : target.position, Vector3.zero, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Punch, useLocal, 0, vibrato, punchVector);
 
         public static TinyTweenHandle PunchScale(Transform target, Vector3 punchVector, float duration, int vibrato = 3)
-            => TinyTweenRunner.Instance.StartTween(target, Vector3.zero, Vector3.zero, duration, TinyTweenType.PunchScale, true, 0, vibrato, punchVector);
+            => TinyTweenRunner.Instance.StartTween(target, Vector3.zero, Vector3.zero, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.PunchScale, true, 0, vibrato, punchVector);
             
         public static TinyTweenHandle Float(float from, float to, float duration, Action<float> onUpdate)
         {
-            var handle = TinyTweenRunner.Instance.StartTween(null, new Vector3(from, 0, 0), new Vector3(to, 0, 0), duration, TinyTweenType.CustomFloat, false);
+            var handle = TinyTweenRunner.Instance.StartTween(null, new Vector3(from, 0, 0), new Vector3(to, 0, 0), Quaternion.identity, Quaternion.identity, duration, TinyTweenType.CustomFloat, false);
             
             var tw = handle.tween;
             handle.OnUpdate((k) => {
@@ -517,6 +584,30 @@ namespace TinyTween
         
         public static TinyTweenHandle TLocalMove(this Transform target, Vector3 endValue, float duration) 
             => TinyTweener.MoveTo(target, endValue, duration, true);
+
+        public static TinyTweenHandle TMoveBy(this Transform target, Vector3 amount, float duration)
+            => TinyTweener.MoveBy(target, amount, duration, false);
+
+        public static TinyTweenHandle TLocalMoveBy(this Transform target, Vector3 amount, float duration)
+            => TinyTweener.MoveBy(target, amount, duration, true);
+
+        public static TinyTweenHandle TRotate(this Transform target, Vector3 endValue, float duration)
+            => TinyTweener.RotateTo(target, endValue, duration, false);
+        
+        public static TinyTweenHandle TRotate(this Transform target, Quaternion endValue, float duration)
+            => TinyTweener.RotateTo(target, endValue, duration, false);
+
+        public static TinyTweenHandle TLocalRotate(this Transform target, Vector3 endValue, float duration)
+            => TinyTweener.RotateTo(target, endValue, duration, true);
+
+        public static TinyTweenHandle TLocalRotate(this Transform target, Quaternion endValue, float duration)
+            => TinyTweener.RotateTo(target, endValue, duration, true);
+
+        public static TinyTweenHandle TRotateBy(this Transform target, Vector3 amount, float duration)
+            => TinyTweener.RotateBy(target, amount, duration, false);
+
+        public static TinyTweenHandle TLocalRotateBy(this Transform target, Vector3 amount, float duration)
+            => TinyTweener.RotateBy(target, amount, duration, true);
 
         public static TinyTweenHandle TJump(this Transform target, Vector3 endValue, float duration, float height, int count) 
             => TinyTweener.JumpTo(target, endValue, height, count, duration, false);
