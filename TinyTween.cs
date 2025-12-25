@@ -36,188 +36,301 @@ namespace TinyTween
         InBounce, OutBounce, InOutBounce
     }
 
-    internal class TinyTweenInstance
+    internal enum TinyRotateMode
+    {
+        QuaternionTo,
+        EulerRelative
+    }
+
+    internal sealed class TinyTweenInstance
     {
         public long uniqueId;
+
         public Transform target;
-        public Vector3 startPos;
-        public Vector3 endPos;
-        public Quaternion startRot;
-        public Quaternion endRot;
+        public bool useLocal;
+        public bool useUnscaledTime;
+
+        public TinyTweenType type;
+        public TinyEaseType easeType;
+
         public float duration;
         public float delay;
         public float elapsed;
-        public bool useLocal;
-        public bool useUnscaledTime;
-        public TinyTweenType type;
-        public TinyEaseType easeType;
+
+        public int loopsTotal;
+        public TinyLoopType loopType;
+
+        public bool isCompleted;
+
+        public bool captureStartOnPlay;
+        public bool started;
+
+        public Vector3 baseStartPos;
+        public Vector3 baseEndPos;
+
+        public Quaternion baseStartRot;
+        public Quaternion baseEndRot;
+
+        public Vector3 baseStartEuler;
+        public Vector3 baseEndEuler;
+        public TinyRotateMode rotateMode;
+
+        public bool isRelative;
+        public Vector3 relativePos;
+        public Vector3 relativeEuler;
+
         public float jumpHeight;
         public int jumpCount;
+
         public Vector3 punch;
-        public bool isCompleted;
-        public int loops;
-        public TinyLoopType loopType;
+
         public Action onComplete;
         public Action<float> onUpdate;
 
+        public bool timingSealed;
+
+        public bool speedBased;
+        public float speed;
+        public bool durationResolved;
+        public float estimatedDuration;
+
+        public float customFloatFrom;
+        public float customFloatTo;
+        public Action<float> customFloatSetter;
+
         public void Reset()
         {
+            uniqueId = 0;
+
             target = null;
-            onComplete = null;
-            onUpdate = null;
-            isCompleted = false;
-            elapsed = 0f;
-            delay = 0f;
-            loops = 1;
-            loopType = TinyLoopType.Restart;
-            easeType = TinyEaseType.Linear;
             useLocal = false;
             useUnscaledTime = false;
-            jumpHeight = 0;
+
+            type = TinyTweenType.Move;
+            easeType = TinyEaseType.Linear;
+
+            duration = 0f;
+            delay = 0f;
+            elapsed = 0f;
+
+            loopsTotal = 1;
+            loopType = TinyLoopType.Restart;
+
+            isCompleted = false;
+
+            captureStartOnPlay = false;
+            started = false;
+
+            baseStartPos = Vector3.zero;
+            baseEndPos = Vector3.zero;
+
+            baseStartRot = Quaternion.identity;
+            baseEndRot = Quaternion.identity;
+
+            baseStartEuler = Vector3.zero;
+            baseEndEuler = Vector3.zero;
+            rotateMode = TinyRotateMode.QuaternionTo;
+
+            isRelative = false;
+            relativePos = Vector3.zero;
+            relativeEuler = Vector3.zero;
+
+            jumpHeight = 0f;
             jumpCount = 0;
+
             punch = Vector3.zero;
-            startRot = Quaternion.identity;
-            endRot = Quaternion.identity;
+
+            onComplete = null;
+            onUpdate = null;
+
+            timingSealed = false;
+
+            speedBased = false;
+            speed = 0f;
+            durationResolved = true;
+            estimatedDuration = 0f;
+
+            customFloatFrom = 0f;
+            customFloatTo = 0f;
+            customFloatSetter = null;
         }
     }
 
     public readonly struct TinyTweenHandle
     {
         internal readonly TinyTweenInstance tween;
-        private readonly long id;
+        readonly long id;
 
         internal TinyTweenHandle(TinyTweenInstance tween)
         {
             this.tween = tween;
-            this.id = tween != null ? tween.uniqueId : -1;
+            id = tween != null ? tween.uniqueId : -1;
         }
 
         public bool IsValid => tween != null && tween.uniqueId == id && !tween.isCompleted;
 
-        internal float GetTotalDuration()
+        internal float GetDelay() => IsValid ? tween.delay : 0f;
+
+        internal void SetDelayRaw(float delay)
         {
-            if (!IsValid) return 0f;
-            if (tween.loops == -1) return float.MaxValue;
-            return tween.duration * tween.loops;
+            if (!IsValid) return;
+            tween.delay = delay;
         }
 
-        internal float GetDelay() => IsValid ? tween.delay : 0f;
+        internal void SealTiming()
+        {
+            if (!IsValid) return;
+            tween.timingSealed = true;
+        }
+
+        internal float GetTotalDurationEstimate()
+        {
+            if (!IsValid) return 0f;
+            if (tween.loopsTotal == -1) return float.PositiveInfinity;
+
+            int loops = tween.loopsTotal;
+            if (loops < 1) loops = 1;
+
+            float perLoop = tween.duration;
+
+            if (tween.speedBased && !tween.durationResolved)
+            {
+                perLoop = tween.estimatedDuration;
+            }
+
+            if (perLoop <= 0f) return 0f;
+            return perLoop * loops;
+        }
 
         public TinyTweenHandle SetSpeedBased()
         {
-            if (IsValid)
-            {
-                float speed = tween.duration;
-                if (speed <= 0f) return this;
+            if (!IsValid) return this;
+            if (tween.timingSealed) return this;
 
-                float distance = 0f;
+            float spd = tween.duration;
+            if (spd <= 0f) return this;
 
-                switch (tween.type)
-                {
-                    case TinyTweenType.Move:
-                    case TinyTweenType.Jump:
-                        distance = Vector3.Distance(tween.startPos, tween.endPos);
-                        break;
-                    case TinyTweenType.Rotate:
-                        distance = Quaternion.Angle(tween.startRot, tween.endRot);
-                        break;
-                    case TinyTweenType.CustomFloat:
-                        distance = Mathf.Abs(tween.endPos.x - tween.startPos.x);
-                        break;
-                    case TinyTweenType.Punch:
-                    case TinyTweenType.PunchScale:
-                        return this; 
-                }
+            tween.speedBased = true;
+            tween.speed = spd;
+            tween.duration = 0f;
+            tween.durationResolved = false;
 
-                if (distance > 0f)
-                {
-                    tween.duration = distance / speed;
-                }
-                else
-                {
-                    tween.duration = 0f;
-                }
-            }
+            tween.estimatedDuration = TinyTweenRunner.EstimateSpeedBasedDuration(tween);
+
+            // Eğer tween zaten başlamışsa veya sequence için zorlanmışsa hemen hesapla
+            if (tween.started)
+                TinyTweenRunner.ResolveDurationIfNeeded(tween);
+
             return this;
         }
 
         public TinyTweenHandle SetLoops(int loops, TinyLoopType loopType = TinyLoopType.Restart)
         {
-            if (IsValid)
-            {
-                if (loops < -1) loops = 1;
-                if (loops == 0) loops = 1;
+            if (!IsValid) return this;
+            if (tween.timingSealed) return this;
 
-                tween.loops = loops;
-                tween.loopType = loopType;
-            }
+            if (loops < -1) loops = 1;
+            if (loops == 0) loops = 1;
+
+            tween.loopsTotal = loops;
+            tween.loopType = loopType;
             return this;
         }
 
         public TinyTweenHandle SetEase(TinyEaseType ease)
         {
-            if (IsValid) tween.easeType = ease;
+            if (!IsValid) return this;
+            tween.easeType = ease;
             return this;
         }
 
         public TinyTweenHandle SetDelay(float delay)
         {
-            if (IsValid) tween.delay = delay;
+            if (!IsValid) return this;
+            if (tween.timingSealed) return this;
+
+            tween.delay = delay;
             return this;
         }
 
         public TinyTweenHandle SetIgnoreTimeScale(bool ignore)
         {
-            if (IsValid) tween.useUnscaledTime = ignore;
+            if (!IsValid) return this;
+            tween.useUnscaledTime = ignore;
             return this;
         }
 
         public TinyTweenHandle OnComplete(Action callback)
         {
-            if (IsValid) tween.onComplete += callback;
+            if (!IsValid) return this;
+            tween.onComplete += callback;
             return this;
         }
 
         public TinyTweenHandle OnUpdate(Action<float> callback)
         {
-            if (IsValid) tween.onUpdate += callback;
+            if (!IsValid) return this;
+            tween.onUpdate += callback;
             return this;
         }
 
         public void Kill()
         {
-            if (tween != null && tween.uniqueId == id)
-            {
-                TinyTweenRunner.Instance.KillTween(tween);
-            }
+            if (tween == null || tween.uniqueId != id) return;
+            var runner = TinyTweenRunner.InstanceOrNull;
+            if (runner == null) return;
+            runner.KillTween(tween);
         }
 
         public void Complete()
         {
-            if (tween != null && tween.uniqueId == id)
-            {
-                TinyTweenRunner.Instance.CompleteTween(tween);
-            }
+            if (tween == null || tween.uniqueId != id) return;
+            var runner = TinyTweenRunner.InstanceOrNull;
+            if (runner == null) return;
+            runner.CompleteTween(tween);
         }
     }
 
-    public struct TinySequence
+    public sealed class TinySequence
     {
-        private float _cursor;
-        private float _prevCursor;
+        float _cursor;
+        float _prevCursor;
+        bool _locked;
 
         public TinySequence Append(TinyTweenHandle handle)
         {
             if (!handle.IsValid) return this;
 
-            float currentDelay = handle.GetDelay();
-            float duration = handle.GetTotalDuration();
+            if (_locked)
+            {
+                handle.Kill();
+                return this;
+            }
 
-            handle.SetDelay(_cursor + currentDelay);
+            // KRİTİK FİX: Sadece SpeedBased olanları önceden resolve et.
+            // Normal tween'ler (Duration bazlı) çalışacağı zaman pozisyon yakalasın.
+            // Böylece Sequence içinde MoveTo düzgün çalışır.
+            if (handle.tween.speedBased)
+            {
+                TinyTweenRunner.ForceStartAndResolveForSequence(handle.tween);
+            }
 
+            float d = handle.GetDelay();
+            float dur = handle.GetTotalDurationEstimate();
+
+            handle.SetDelayRaw(_cursor + d);
             _prevCursor = _cursor;
-            _cursor += duration + currentDelay;
 
+            handle.SealTiming();
+
+            if (float.IsPositiveInfinity(dur))
+            {
+                _cursor = float.PositiveInfinity;
+                _locked = true;
+                return this;
+            }
+
+            _cursor += dur + d;
             return this;
         }
 
@@ -225,12 +338,32 @@ namespace TinyTween
         {
             if (!handle.IsValid) return this;
 
-            float currentDelay = handle.GetDelay();
-            float duration = handle.GetTotalDuration();
+            if (_locked)
+            {
+                handle.Kill();
+                return this;
+            }
 
-            handle.SetDelay(_prevCursor + currentDelay);
+            if (handle.tween.speedBased)
+            {
+                TinyTweenRunner.ForceStartAndResolveForSequence(handle.tween);
+            }
 
-            float end = _prevCursor + currentDelay + duration;
+            float d = handle.GetDelay();
+            float dur = handle.GetTotalDurationEstimate();
+
+            handle.SetDelayRaw(_prevCursor + d);
+
+            handle.SealTiming();
+
+            if (float.IsPositiveInfinity(dur))
+            {
+                _cursor = float.PositiveInfinity;
+                _locked = true;
+                return this;
+            }
+
+            float end = _prevCursor + d + dur;
             if (end > _cursor) _cursor = end;
 
             return this;
@@ -238,6 +371,12 @@ namespace TinyTween
 
         public TinySequence AppendInterval(float interval)
         {
+            if (_locked)
+            {
+                _cursor = float.PositiveInfinity;
+                return this;
+            }
+
             _prevCursor = _cursor;
             _cursor += interval;
             return this;
@@ -248,125 +387,494 @@ namespace TinyTween
     public sealed class TinyTweenRunner : MonoBehaviour
     {
         static TinyTweenRunner instance;
+        static bool isQuitting;
+
         readonly List<TinyTweenInstance> activeTweens = new List<TinyTweenInstance>(512);
         readonly Stack<TinyTweenInstance> pool = new Stack<TinyTweenInstance>(512);
-        long globalIdCounter = 0;
+
+        long globalIdCounter;
+
         const float PI = Mathf.PI;
         const float HPI = Mathf.PI / 2f;
+        const float CycleEpsilon = 0.000001f;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         static void Init()
         {
             instance = null;
+            isQuitting = false;
         }
 
-        public static TinyTweenRunner Instance
+        void Awake()
+        {
+            if (instance != null && instance != this)
+            {
+                Destroy(gameObject);
+                return;
+            }
+
+            instance = this;
+            DontDestroyOnLoad(gameObject);
+        }
+
+        void OnApplicationQuit()
+        {
+            isQuitting = true;
+        }
+
+        void OnDestroy()
+        {
+            if (instance == this) instance = null;
+        }
+
+        public static TinyTweenRunner InstanceOrNull
         {
             get
             {
+                if (isQuitting) return null;
                 if (instance == null)
                 {
                     var go = new GameObject("[TinyTweenRunner]");
                     instance = go.AddComponent<TinyTweenRunner>();
-                    DontDestroyOnLoad(go);
                 }
                 return instance;
             }
         }
 
-        internal TinyTweenHandle StartTween(Transform target, Vector3 startValue, Vector3 endValue, Quaternion startRot, Quaternion endRot, float duration, TinyTweenType type, bool useLocal, float jumpHeight = 0, int jumpCount = 0, Vector3 punchVector = default)
+        static Quaternion NormalizeQuaternion(Quaternion q)
         {
-            TinyTweenInstance tween = pool.Count > 0 ? pool.Pop() : new TinyTweenInstance();
-            tween.Reset();
-
-            tween.uniqueId = ++globalIdCounter;
-            tween.target = target;
-            tween.endPos = endValue;
-            tween.startRot = startRot;
-            tween.endRot = endRot;
-            tween.duration = duration;
-            tween.type = type;
-            tween.useLocal = useLocal;
-            tween.jumpHeight = jumpHeight;
-            tween.jumpCount = jumpCount;
-            tween.punch = punchVector;
-
-            if (type == TinyTweenType.PunchScale)
+            float mag = Mathf.Sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+            if (mag > 0f)
             {
-                if (target != null) tween.startPos = target.localScale;
+                float inv = 1f / mag;
+                q.x *= inv;
+                q.y *= inv;
+                q.z *= inv;
+                q.w *= inv;
+                return q;
             }
-            else if (type == TinyTweenType.Rotate)
-            {
-            }
-            else
-            {
-                tween.startPos = startValue;
-            }
-
-            activeTweens.Add(tween);
-            return new TinyTweenHandle(tween);
+            return Quaternion.identity;
         }
 
-        private void Despawn(TinyTweenInstance tween)
+        internal TinyTweenHandle StartTween(
+            Transform target,
+            Vector3 startValue,
+            Vector3 endValue,
+            Quaternion startRot,
+            Quaternion endRot,
+            float duration,
+            TinyTweenType type,
+            bool useLocal,
+            bool captureStartOnPlay,
+            bool isRelative,
+            Vector3 relativePos,
+            Vector3 relativeEuler,
+            TinyRotateMode rotateMode,
+            float jumpHeight = 0f,
+            int jumpCount = 0,
+            Vector3 punchVector = default,
+            Action<float> customSetter = null)
         {
-            tween.Reset();
-            pool.Push(tween);
-        }
+            if (isQuitting) return default;
 
-        internal void KillTween(TinyTweenInstance tween)
-        {
-            if (tween != null) tween.isCompleted = true;
-        }
+            TinyTweenInstance tw = pool.Count > 0 ? pool.Pop() : new TinyTweenInstance();
+            tw.Reset();
 
-        internal void CompleteTween(TinyTweenInstance tween)
-        {
-            if (tween == null || tween.isCompleted) return;
-            
-            ApplyFinalPosition(tween);
-            tween.isCompleted = true;
-            tween.onComplete?.Invoke();
-        }
+            tw.uniqueId = ++globalIdCounter;
 
-        void ApplyFinalPosition(TinyTweenInstance tween)
-        {
-            if (tween.target == null && tween.type != TinyTweenType.CustomFloat) return;
+            tw.target = target;
+            tw.useLocal = useLocal;
 
-            if (tween.type == TinyTweenType.PunchScale)
+            tw.type = type;
+            tw.duration = duration;
+            tw.durationResolved = true;
+            tw.estimatedDuration = duration;
+
+            tw.captureStartOnPlay = captureStartOnPlay;
+            tw.started = !captureStartOnPlay || type == TinyTweenType.CustomFloat;
+
+            tw.isRelative = isRelative;
+            tw.relativePos = relativePos;
+            tw.relativeEuler = relativeEuler;
+
+            tw.rotateMode = rotateMode;
+
+            tw.baseEndPos = endValue;
+            tw.baseEndRot = endRot;
+
+            if (!captureStartOnPlay)
             {
-                tween.target.localScale = tween.startPos;
-                return;
-            }
-
-            Vector3 finalPos = tween.startPos;
-            Quaternion finalRot = tween.startRot;
-
-            switch (tween.type)
-            {
-                case TinyTweenType.Move:
-                case TinyTweenType.Jump:
-                    finalPos = tween.endPos;
-                    break;
-                case TinyTweenType.Rotate:
-                    finalRot = tween.endRot;
-                    break;
-                case TinyTweenType.Punch:
-                    finalPos = tween.startPos;
-                    break;
-            }
-
-            if (tween.target != null)
-            {
-                if (tween.type == TinyTweenType.Rotate)
+                if (type == TinyTweenType.Rotate)
                 {
-                    if (tween.useLocal) tween.target.localRotation = finalRot;
-                    else tween.target.rotation = finalRot;
+                    tw.baseStartRot = startRot;
+                }
+                else if (type == TinyTweenType.PunchScale)
+                {
+                    tw.baseStartPos = target != null ? target.localScale : startValue;
                 }
                 else
                 {
-                    if (tween.useLocal) tween.target.localPosition = finalPos;
-                    else tween.target.position = finalPos;
+                    tw.baseStartPos = startValue;
                 }
             }
+            else
+            {
+                tw.baseStartPos = startValue;
+                tw.baseStartRot = startRot;
+            }
+
+            tw.jumpHeight = jumpHeight;
+            tw.jumpCount = jumpCount;
+            tw.punch = punchVector;
+
+            if (type == TinyTweenType.CustomFloat)
+            {
+                tw.customFloatFrom = startValue.x;
+                tw.customFloatTo = endValue.x;
+                tw.customFloatSetter = customSetter;
+            }
+
+            activeTweens.Add(tw);
+            return new TinyTweenHandle(tw);
+        }
+
+        void Despawn(TinyTweenInstance tw)
+        {
+            tw.Reset();
+            pool.Push(tw);
+        }
+
+        internal void KillTween(TinyTweenInstance tw)
+        {
+            if (tw != null) tw.isCompleted = true;
+        }
+
+        internal void CompleteTween(TinyTweenInstance tw)
+        {
+            if (tw == null || tw.isCompleted) return;
+
+            ApplyCompleteValue(tw);
+            tw.isCompleted = true;
+
+            var cb = tw.onComplete;
+            if (cb != null)
+            {
+                try { cb(); }
+                catch (Exception ex) { Debug.LogException(ex); }
+            }
+        }
+
+        internal static void ForceStartAndResolveForSequence(TinyTweenInstance tw)
+        {
+            if (tw == null) return;
+
+            if (!tw.started)
+            {
+                if (tw.type == TinyTweenType.CustomFloat)
+                {
+                    tw.started = true;
+                }
+                else if (tw.target == null)
+                {
+                    tw.started = true;
+                }
+                else
+                {
+                    if (tw.type == TinyTweenType.Rotate)
+                        tw.baseStartRot = tw.useLocal ? tw.target.localRotation : tw.target.rotation;
+                    else if (tw.type == TinyTweenType.PunchScale)
+                        tw.baseStartPos = tw.target.localScale;
+                    else
+                        tw.baseStartPos = tw.useLocal ? tw.target.localPosition : tw.target.position;
+
+                    tw.started = true;
+                }
+            }
+
+            ResolveDurationIfNeeded(tw);
+        }
+
+        internal static float EstimateSpeedBasedDuration(TinyTweenInstance tw)
+        {
+            if (tw == null) return 0f;
+            float spd = tw.speed;
+            if (spd <= 0f) return 0f;
+
+            float dist = 0f;
+
+            if (tw.type == TinyTweenType.Move || tw.type == TinyTweenType.Jump)
+            {
+                if (tw.isRelative)
+                {
+                    dist = tw.relativePos.magnitude;
+                }
+                else
+                {
+                    Vector3 s = tw.baseStartPos;
+                    if (tw.captureStartOnPlay && tw.target != null)
+                        s = tw.useLocal ? tw.target.localPosition : tw.target.position;
+                    dist = Vector3.Distance(s, tw.baseEndPos);
+                }
+            }
+            else if (tw.type == TinyTweenType.Rotate)
+            {
+                if (tw.rotateMode == TinyRotateMode.EulerRelative)
+                {
+                    dist = tw.relativeEuler.magnitude;
+                }
+                else
+                {
+                    Quaternion s = tw.baseStartRot;
+                    if (tw.captureStartOnPlay && tw.target != null)
+                        s = tw.useLocal ? tw.target.localRotation : tw.target.rotation;
+                    dist = Quaternion.Angle(s, tw.baseEndRot);
+                }
+            }
+            else if (tw.type == TinyTweenType.CustomFloat)
+            {
+                dist = Mathf.Abs(tw.customFloatTo - tw.customFloatFrom);
+            }
+
+            return dist > 0f ? (dist / spd) : 0f;
+        }
+
+        internal static void ResolveDurationIfNeeded(TinyTweenInstance tw)
+        {
+            if (tw == null) return;
+            if (!tw.speedBased || tw.durationResolved) return;
+
+            float spd = tw.speed;
+            if (spd <= 0f)
+            {
+                tw.duration = 0f;
+                tw.durationResolved = true;
+                return;
+            }
+
+            float dist = 0f;
+
+            if (tw.type == TinyTweenType.Move || tw.type == TinyTweenType.Jump)
+            {
+                // Speed based'de gerçek zamanlı hesaplama için:
+                Vector3 currentStart = tw.baseStartPos;
+                if (tw.started && tw.captureStartOnPlay && tw.target != null) 
+                   currentStart = tw.useLocal ? tw.target.localPosition : tw.target.position;
+
+                dist = tw.isRelative ? tw.relativePos.magnitude : Vector3.Distance(currentStart, tw.baseEndPos);
+            }
+            else if (tw.type == TinyTweenType.Rotate)
+            {
+                if (tw.rotateMode == TinyRotateMode.EulerRelative)
+                    dist = tw.relativeEuler.magnitude;
+                else
+                    dist = Quaternion.Angle(tw.baseStartRot, tw.baseEndRot);
+            }
+            else if (tw.type == TinyTweenType.CustomFloat)
+            {
+                dist = Mathf.Abs(tw.customFloatTo - tw.customFloatFrom);
+            }
+
+            tw.duration = dist > 0f ? (dist / spd) : 0f;
+            tw.durationResolved = true;
+        }
+
+        void EnsureStarted(TinyTweenInstance tw)
+        {
+            if (tw.started) return;
+
+            if (tw.type == TinyTweenType.CustomFloat)
+            {
+                tw.started = true;
+                return;
+            }
+
+            if (tw.target == null)
+            {
+                tw.started = true;
+                return;
+            }
+
+            if (tw.type == TinyTweenType.Rotate)
+            {
+                if (tw.rotateMode == TinyRotateMode.EulerRelative)
+                {
+                    tw.baseStartEuler = tw.useLocal ? tw.target.localEulerAngles : tw.target.eulerAngles;
+                    tw.baseEndEuler = tw.baseStartEuler + tw.relativeEuler;
+                }
+                else
+                {
+                    tw.baseStartRot = tw.useLocal ? tw.target.localRotation : tw.target.rotation;
+                }
+            }
+            else if (tw.type == TinyTweenType.PunchScale)
+            {
+                tw.baseStartPos = tw.target.localScale;
+            }
+            else
+            {
+                tw.baseStartPos = tw.useLocal ? tw.target.localPosition : tw.target.position;
+            }
+
+            if (tw.isRelative)
+            {
+                if (tw.type == TinyTweenType.Move || tw.type == TinyTweenType.Jump)
+                {
+                    tw.baseEndPos = tw.baseStartPos + tw.relativePos;
+                }
+            }
+
+            tw.started = true;
+        }
+
+        void ApplyCompleteValue(TinyTweenInstance tw)
+        {
+            EnsureStarted(tw);
+            ResolveDurationIfNeeded(tw);
+
+            int loops = tw.loopsTotal;
+            if (loops == 0) loops = 1;
+
+            if (tw.type == TinyTweenType.CustomFloat)
+            {
+                float from = tw.customFloatFrom;
+                float to = tw.customFloatTo;
+
+                float finalVal;
+
+                if (loops == -1)
+                {
+                    finalVal = to;
+                }
+                else if (tw.loopType == TinyLoopType.Yoyo)
+                {
+                    finalVal = (loops % 2 == 0) ? from : to;
+                }
+                else if (tw.loopType == TinyLoopType.Incremental && loops > 1)
+                {
+                    float diff = to - from;
+                    finalVal = from + diff * loops;
+                }
+                else
+                {
+                    finalVal = to;
+                }
+
+                var setter = tw.customFloatSetter;
+                if (setter != null)
+                {
+                    try { setter(finalVal); }
+                    catch (Exception ex) { Debug.LogException(ex); }
+                }
+
+                var upd = tw.onUpdate;
+                if (upd != null)
+                {
+                    try { upd(finalVal); }
+                    catch (Exception ex) { Debug.LogException(ex); }
+                }
+
+                return;
+            }
+
+            if (tw.type != TinyTweenType.CustomFloat && tw.target == null) return;
+
+            if (tw.type == TinyTweenType.PunchScale)
+            {
+                tw.target.localScale = tw.baseStartPos;
+                return;
+            }
+
+            if (tw.type == TinyTweenType.Punch)
+            {
+                Vector3 p = tw.baseStartPos;
+                if (tw.useLocal) tw.target.localPosition = p;
+                else tw.target.position = p;
+                return;
+            }
+
+            if (tw.type == TinyTweenType.Rotate)
+            {
+                if (tw.rotateMode == TinyRotateMode.EulerRelative)
+                {
+                    Vector3 finalEuler;
+
+                    if (loops == -1)
+                    {
+                        finalEuler = tw.baseEndEuler;
+                    }
+                    else if (tw.loopType == TinyLoopType.Yoyo)
+                    {
+                        finalEuler = (loops % 2 == 0) ? tw.baseStartEuler : tw.baseEndEuler;
+                    }
+                    else if (tw.loopType == TinyLoopType.Incremental && loops > 1)
+                    {
+                        Vector3 diff = tw.baseEndEuler - tw.baseStartEuler;
+                        finalEuler = tw.baseStartEuler + diff * loops;
+                    }
+                    else
+                    {
+                        finalEuler = tw.baseEndEuler;
+                    }
+
+                    Quaternion r = Quaternion.Euler(finalEuler);
+                    if (tw.useLocal) tw.target.localRotation = r;
+                    else tw.target.rotation = r;
+                }
+                else
+                {
+                    Quaternion finalRot;
+
+                    if (loops == -1)
+                    {
+                        finalRot = tw.baseEndRot;
+                    }
+                    else if (tw.loopType == TinyLoopType.Yoyo)
+                    {
+                        finalRot = (loops % 2 == 0) ? tw.baseStartRot : tw.baseEndRot;
+                    }
+                    else if (tw.loopType == TinyLoopType.Incremental && loops > 1)
+                    {
+                        Quaternion diff = tw.baseEndRot * Quaternion.Inverse(tw.baseStartRot);
+                        diff.ToAngleAxis(out float angle, out Vector3 axis);
+                        if (angle > 180f) angle -= 360f;
+
+                        Quaternion step = Quaternion.AngleAxis(angle * loops, axis);
+                        finalRot = tw.baseStartRot * step;
+                    }
+                    else
+                    {
+                        finalRot = tw.baseEndRot;
+                    }
+
+                    if (tw.useLocal) tw.target.localRotation = finalRot;
+                    else tw.target.rotation = finalRot;
+                }
+
+                return;
+            }
+
+            Vector3 finalPos;
+
+            if (loops == -1)
+            {
+                finalPos = tw.baseEndPos;
+            }
+            else if (tw.loopType == TinyLoopType.Yoyo)
+            {
+                finalPos = (loops % 2 == 0) ? tw.baseStartPos : tw.baseEndPos;
+            }
+            else if (tw.loopType == TinyLoopType.Incremental && loops > 1)
+            {
+                Vector3 diff = tw.baseEndPos - tw.baseStartPos;
+                finalPos = tw.baseStartPos + diff * loops;
+            }
+            else
+            {
+                finalPos = tw.baseEndPos;
+            }
+
+            if (tw.useLocal) tw.target.localPosition = finalPos;
+            else tw.target.position = finalPos;
         }
 
         float EvaluateEase(TinyEaseType ease, float t)
@@ -418,155 +926,257 @@ namespace TinyTween
 
             for (int i = count - 1; i >= 0; i--)
             {
-                var tween = activeTweens[i];
+                TinyTweenInstance tw = activeTweens[i];
 
-                if (tween.isCompleted || (tween.target == null && tween.type != TinyTweenType.CustomFloat))
+                if (tw.isCompleted || (tw.type != TinyTweenType.CustomFloat && tw.target == null))
                 {
-                    RemoveAtSwapBack(i, tween);
+                    RemoveAtSwapBack(i, tw);
                     continue;
                 }
 
-                float currentDt = tween.useUnscaledTime ? unscaledDt : dt;
-                tween.elapsed += currentDt;
+                float currentDt = tw.useUnscaledTime ? unscaledDt : dt;
+                tw.elapsed += currentDt;
 
-                float activeTime = tween.elapsed - tween.delay;
-                float progress;
-                
-                if (tween.duration <= 0f)
+                float activeTime = tw.elapsed - tw.delay;
+                if (activeTime < 0f)
+                    continue;
+
+                // Tween zamanı geldiğinde başlamasını sağla (Sequence için kritik)
+                EnsureStarted(tw);
+                ResolveDurationIfNeeded(tw);
+
+                if (tw.duration <= 0f)
                 {
-                    progress = activeTime >= 0f ? 1f : 0f;
+                    ApplyCompleteValue(tw);
+                    tw.isCompleted = true;
+
+                    var cb0 = tw.onComplete;
+                    RemoveAtSwapBack(i, tw);
+                    if (cb0 != null)
+                    {
+                        try { cb0(); }
+                        catch (Exception ex) { Debug.LogException(ex); }
+                    }
+                    continue;
+                }
+
+                int loops = tw.loopsTotal;
+                if (loops == 0) loops = 1;
+
+                double total = (double)tw.duration * (double)Mathf.Max(1, loops);
+                bool finished = loops != -1 && ((double)activeTime >= total);
+
+                float tForCycle = activeTime;
+                if (tForCycle > 0f)
+                {
+                    tForCycle -= CycleEpsilon;
+                    if (tForCycle < 0f) tForCycle = 0f;
+                }
+
+                long cycleIndexL = (long)(tForCycle / tw.duration);
+                if (loops != -1 && cycleIndexL >= loops)
+                    cycleIndexL = loops - 1;
+                if (cycleIndexL < 0) cycleIndexL = 0;
+
+                float cycleTime = activeTime - ((float)cycleIndexL * tw.duration);
+                if (finished) cycleTime = tw.duration;
+
+                float progress = cycleTime / tw.duration;
+                if (progress < 0f) progress = 0f;
+                if (progress > 1f) progress = 1f;
+
+                float k = EvaluateEase(tw.easeType, progress);
+
+                int parity = (int)(cycleIndexL & 1L);
+                int cycleIndex = cycleIndexL > int.MaxValue ? int.MaxValue : (int)cycleIndexL;
+
+                if (tw.type == TinyTweenType.CustomFloat)
+                {
+                    float v = Mathf.LerpUnclamped(tw.customFloatFrom, tw.customFloatTo, k);
+
+                    var setter = tw.customFloatSetter;
+                    if (setter != null)
+                    {
+                        try { setter(v); }
+                        catch (Exception ex) { Debug.LogException(ex); tw.isCompleted = true; }
+                    }
+
+                    var upd = tw.onUpdate;
+                    if (!tw.isCompleted && upd != null)
+                    {
+                        try { upd(v); }
+                        catch (Exception ex) { Debug.LogException(ex); tw.isCompleted = true; }
+                    }
+
+                    if (tw.isCompleted)
+                    {
+                        RemoveAtSwapBack(i, tw);
+                        continue;
+                    }
+
+                    if (finished)
+                    {
+                        ApplyCompleteValue(tw);
+                        tw.isCompleted = true;
+
+                        var cb1 = tw.onComplete;
+                        RemoveAtSwapBack(i, tw);
+                        if (cb1 != null)
+                        {
+                            try { cb1(); }
+                            catch (Exception ex) { Debug.LogException(ex); }
+                        }
+                    }
+
+                    continue;
+                }
+
+                if (tw.type == TinyTweenType.Rotate)
+                {
+                    if (tw.rotateMode == TinyRotateMode.EulerRelative)
+                    {
+                        Vector3 s = tw.baseStartEuler;
+                        Vector3 e = tw.baseEndEuler;
+
+                        if (tw.loopType == TinyLoopType.Incremental && cycleIndexL > 0)
+                        {
+                            Vector3 diff = tw.baseEndEuler - tw.baseStartEuler;
+                            s = tw.baseStartEuler + diff * cycleIndex;
+                            e = tw.baseStartEuler + diff * (cycleIndex + 1);
+                        }
+                        else if (tw.loopType == TinyLoopType.Yoyo && (parity == 1))
+                        {
+                            Vector3 tmp = s;
+                            s = e;
+                            e = tmp;
+                        }
+
+                        Vector3 ev = Vector3.LerpUnclamped(s, e, k);
+                        Quaternion r = Quaternion.Euler(ev);
+                        if (tw.useLocal) tw.target.localRotation = r;
+                        else tw.target.rotation = r;
+                    }
+                    else
+                    {
+                        Quaternion s = tw.baseStartRot;
+                        Quaternion e = tw.baseEndRot;
+
+                        if (tw.loopType == TinyLoopType.Incremental && cycleIndexL > 0)
+                        {
+                            Quaternion diff = tw.baseEndRot * Quaternion.Inverse(tw.baseStartRot);
+                            diff.ToAngleAxis(out float angle, out Vector3 axis);
+                            if (angle > 180f) angle -= 360f;
+
+                            Quaternion stepA = Quaternion.AngleAxis(angle * cycleIndexL, axis);
+                            Quaternion stepB = Quaternion.AngleAxis(angle * (cycleIndexL + 1), axis);
+
+                            s = tw.baseStartRot * stepA;
+                            e = tw.baseStartRot * stepB;
+                        }
+                        else if (tw.loopType == TinyLoopType.Yoyo && (parity == 1))
+                        {
+                            Quaternion tmp = s;
+                            s = e;
+                            e = tmp;
+                        }
+
+                        Quaternion r = Quaternion.SlerpUnclamped(s, e, k);
+                        if (k < 0f || k > 1f) r = NormalizeQuaternion(r);
+
+                        if (tw.useLocal) tw.target.localRotation = r;
+                        else tw.target.rotation = r;
+                    }
+                }
+                else if (tw.type == TinyTweenType.PunchScale)
+                {
+                    float punchTime = k * tw.jumpCount * PI * 2f;
+                    float decay = 1f - k;
+                    float finalDecay = decay * decay * decay;
+
+                    Vector3 punchVal = tw.punch * (Mathf.Sin(punchTime) * finalDecay);
+                    tw.target.localScale = tw.baseStartPos + punchVal;
                 }
                 else
                 {
-                    progress = activeTime / tween.duration;
-                }
-                
-                progress = Mathf.Clamp01(progress);
+                    Vector3 s = tw.baseStartPos;
+                    Vector3 e = tw.baseEndPos;
 
-                float k = EvaluateEase(tween.easeType, progress);
-
-                tween.onUpdate?.Invoke(k);
-
-                if (tween.isCompleted) 
-                {
-                    continue; 
-                }
-
-                if (tween.target != null)
-                {
-                    if (tween.type == TinyTweenType.Rotate)
+                    if ((tw.type == TinyTweenType.Move || tw.type == TinyTweenType.Jump) && tw.loopType == TinyLoopType.Incremental && cycleIndexL > 0)
                     {
-                        Quaternion result = Quaternion.SlerpUnclamped(tween.startRot, tween.endRot, k);
-                        if (tween.useLocal) tween.target.localRotation = result;
-                        else tween.target.rotation = result;
+                        Vector3 diff = tw.baseEndPos - tw.baseStartPos;
+                        s = tw.baseStartPos + diff * cycleIndex;
+                        e = tw.baseEndPos + diff * cycleIndex;
                     }
-                    else if (tween.type == TinyTweenType.PunchScale)
+                    else if ((tw.type == TinyTweenType.Move || tw.type == TinyTweenType.Jump) && tw.loopType == TinyLoopType.Yoyo && (parity == 1))
                     {
-                        float punchTime = k * tween.jumpCount * PI * 2f;
+                        Vector3 tmp = s;
+                        s = e;
+                        e = tmp;
+                    }
+
+                    Vector3 result = s;
+
+                    if (tw.type == TinyTweenType.Move)
+                    {
+                        result = Vector3.LerpUnclamped(s, e, k);
+                    }
+                    else if (tw.type == TinyTweenType.Jump)
+                    {
+                        result = Vector3.LerpUnclamped(s, e, k);
+                        float jumpProgress = k * tw.jumpCount * PI;
+                        if (k < 1f) result.y += Mathf.Sin(jumpProgress) * tw.jumpHeight;
+                    }
+                    else if (tw.type == TinyTweenType.Punch)
+                    {
+                        float punchTime = k * tw.jumpCount * PI * 2f;
                         float decay = 1f - k;
                         float finalDecay = decay * decay * decay;
-                        
-                        Vector3 punchVal = tween.punch * (Mathf.Sin(punchTime) * finalDecay);
-                        tween.target.localScale = tween.startPos + punchVal;
+                        result = tw.baseStartPos + (tw.punch * (Mathf.Sin(punchTime) * finalDecay));
                     }
-                    else
-                    {
-                        Vector3 result = tween.startPos;
-                        if (tween.type == TinyTweenType.Move)
-                        {
-                            result = Vector3.LerpUnclamped(tween.startPos, tween.endPos, k);
-                        }
-                        else if (tween.type == TinyTweenType.Jump)
-                        {
-                            result = Vector3.LerpUnclamped(tween.startPos, tween.endPos, k);
-                            float jumpProgress = k * tween.jumpCount * PI;
-                            if(k < 1f) result.y += Mathf.Sin(jumpProgress) * tween.jumpHeight;
-                        }
-                        else if (tween.type == TinyTweenType.Punch)
-                        {
-                            float punchTime = k * tween.jumpCount * PI * 2f;
-                            float decay = 1f - k;
-                            float finalDecay = decay * decay * decay;
-                            result += tween.punch * (Mathf.Sin(punchTime) * finalDecay);
-                        }
 
-                        if (tween.useLocal) tween.target.localPosition = result;
-                        else tween.target.position = result;
+                    if (tw.useLocal) tw.target.localPosition = result;
+                    else tw.target.position = result;
+                }
+
+                var upd2 = tw.onUpdate;
+                if (upd2 != null)
+                {
+                    try { upd2(k); }
+                    catch (Exception ex)
+                    {
+                        Debug.LogException(ex);
+                        tw.isCompleted = true;
                     }
                 }
 
-                if (progress >= 1f)
+                if (tw.isCompleted)
                 {
-                    bool loopFinished = false;
+                    RemoveAtSwapBack(i, tw);
+                    continue;
+                }
 
-                    if (tween.loops == -1) 
-                    {
-                        loopFinished = false; 
-                    }
-                    else if (tween.loops > 1) 
-                    {
-                        tween.loops--;
-                        loopFinished = false;
-                    }
-                    else
-                    {
-                        loopFinished = true;
-                    }
+                if (finished)
+                {
+                    ApplyCompleteValue(tw);
+                    tw.isCompleted = true;
 
-                    if (!loopFinished)
+                    var cb2 = tw.onComplete;
+                    RemoveAtSwapBack(i, tw);
+                    if (cb2 != null)
                     {
-                        tween.elapsed = tween.delay;
-
-                        if (tween.type == TinyTweenType.Rotate)
-                        {
-                            if (tween.loopType == TinyLoopType.Incremental)
-                            {
-                                Quaternion diff = tween.endRot * Quaternion.Inverse(tween.startRot);
-                                tween.startRot = tween.endRot;
-                                tween.endRot = tween.endRot * diff;
-                            }
-                            else if (tween.loopType == TinyLoopType.Yoyo)
-                            {
-                                Quaternion temp = tween.startRot;
-                                tween.startRot = tween.endRot;
-                                tween.endRot = temp;
-                            }
-                        }
-                        else if (tween.type != TinyTweenType.Punch && tween.type != TinyTweenType.PunchScale)
-                        {
-                            if (tween.loopType == TinyLoopType.Incremental)
-                            {
-                                Vector3 diff = tween.endPos - tween.startPos;
-                                tween.startPos = tween.endPos;
-                                tween.endPos += diff;
-                            }
-                            else if (tween.loopType == TinyLoopType.Yoyo)
-                            {
-                                Vector3 temp = tween.startPos;
-                                tween.startPos = tween.endPos;
-                                tween.endPos = temp;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        ApplyFinalPosition(tween);
-                        tween.isCompleted = true;
-                        
-                        var callback = tween.onComplete;
-                        RemoveAtSwapBack(i, tween);
-                        callback?.Invoke();
+                        try { cb2(); }
+                        catch (Exception ex) { Debug.LogException(ex); }
                     }
                 }
             }
         }
 
-        private void RemoveAtSwapBack(int index, TinyTweenInstance tween)
+        void RemoveAtSwapBack(int index, TinyTweenInstance tw)
         {
             int lastIndex = activeTweens.Count - 1;
             if (index < lastIndex) activeTweens[index] = activeTweens[lastIndex];
             activeTweens.RemoveAt(lastIndex);
-            Despawn(tween);
+            Despawn(tw);
         }
     }
 
@@ -574,66 +1184,140 @@ namespace TinyTween
     {
         public static TinySequence Sequence() => new TinySequence();
 
+        static TinyTweenHandle StartSafe(
+            Transform target,
+            Vector3 startValue,
+            Vector3 endValue,
+            Quaternion startRot,
+            Quaternion endRot,
+            float duration,
+            TinyTweenType type,
+            bool useLocal,
+            bool captureStartOnPlay,
+            bool isRelative,
+            Vector3 relativePos,
+            Vector3 relativeEuler,
+            TinyRotateMode rotateMode,
+            float jumpHeight = 0f,
+            int jumpCount = 0,
+            Vector3 punchVector = default,
+            Action<float> customSetter = null)
+        {
+            var runner = TinyTweenRunner.InstanceOrNull;
+            if (runner == null) return default;
+
+            return runner.StartTween(
+                target,
+                startValue,
+                endValue,
+                startRot,
+                endRot,
+                duration,
+                type,
+                useLocal,
+                captureStartOnPlay,
+                isRelative,
+                relativePos,
+                relativeEuler,
+                rotateMode,
+                jumpHeight,
+                jumpCount,
+                punchVector,
+                customSetter);
+        }
+
         public static TinyTweenHandle Move(Transform target, Vector3 startValue, Vector3 endValue, float duration, bool useLocal = false)
-            => TinyTweenRunner.Instance.StartTween(target, startValue, endValue, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Move, useLocal);
+        {
+            if (target == null) return default;
+            return StartSafe(target, startValue, endValue, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Move, useLocal, false, false, Vector3.zero, Vector3.zero, TinyRotateMode.QuaternionTo);
+        }
 
         public static TinyTweenHandle MoveTo(Transform target, Vector3 endValue, float duration, bool useLocal = false)
-            => Move(target, useLocal ? target.localPosition : target.position, endValue, duration, useLocal);
+        {
+            if (target == null) return default;
+            return StartSafe(target, Vector3.zero, endValue, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Move, useLocal, true, false, Vector3.zero, Vector3.zero, TinyRotateMode.QuaternionTo);
+        }
 
         public static TinyTweenHandle MoveBy(Transform target, Vector3 amount, float duration, bool useLocal = false)
         {
-            Vector3 start = useLocal ? target.localPosition : target.position;
-            Vector3 end = start + amount;
-            return Move(target, start, end, duration, useLocal);
+            if (target == null) return default;
+            return StartSafe(target, Vector3.zero, Vector3.zero, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Move, useLocal, true, true, amount, Vector3.zero, TinyRotateMode.QuaternionTo);
         }
 
         public static TinyTweenHandle Rotate(Transform target, Quaternion startValue, Quaternion endValue, float duration, bool useLocal = false)
-            => TinyTweenRunner.Instance.StartTween(target, Vector3.zero, Vector3.zero, startValue, endValue, duration, TinyTweenType.Rotate, useLocal);
+        {
+            if (target == null) return default;
+            return StartSafe(target, Vector3.zero, Vector3.zero, startValue, endValue, duration, TinyTweenType.Rotate, useLocal, false, false, Vector3.zero, Vector3.zero, TinyRotateMode.QuaternionTo);
+        }
 
         public static TinyTweenHandle RotateTo(Transform target, Quaternion endValue, float duration, bool useLocal = false)
-            => Rotate(target, useLocal ? target.localRotation : target.rotation, endValue, duration, useLocal);
-
-        public static TinyTweenHandle RotateTo(Transform target, Vector3 endValue, float duration, bool useLocal = false)
-            => Rotate(target, useLocal ? target.localRotation : target.rotation, Quaternion.Euler(endValue), duration, useLocal);
-
-        public static TinyTweenHandle RotateBy(Transform target, Vector3 amount, float duration, bool useLocal = false)
         {
-            Quaternion start = useLocal ? target.localRotation : target.rotation;
-            Quaternion end = start * Quaternion.Euler(amount); 
-            return Rotate(target, start, end, duration, useLocal);
+            if (target == null) return default;
+            return StartSafe(target, Vector3.zero, Vector3.zero, Quaternion.identity, endValue, duration, TinyTweenType.Rotate, useLocal, true, false, Vector3.zero, Vector3.zero, TinyRotateMode.QuaternionTo);
+        }
+
+        public static TinyTweenHandle RotateTo(Transform target, Vector3 endEuler, float duration, bool useLocal = false)
+            => RotateTo(target, Quaternion.Euler(endEuler), duration, useLocal);
+
+        public static TinyTweenHandle RotateBy(Transform target, Vector3 eulerAmount, float duration, bool useLocal = false)
+        {
+            if (target == null) return default;
+            return StartSafe(target, Vector3.zero, Vector3.zero, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Rotate, useLocal, true, true, Vector3.zero, eulerAmount, TinyRotateMode.EulerRelative);
         }
 
         public static TinyTweenHandle Jump(Transform target, Vector3 startValue, Vector3 endValue, float height, int count, float duration, bool useLocal = false)
-            => TinyTweenRunner.Instance.StartTween(target, startValue, endValue, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Jump, useLocal, height, count);
+        {
+            if (target == null) return default;
+            return StartSafe(target, startValue, endValue, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Jump, useLocal, false, false, Vector3.zero, Vector3.zero, TinyRotateMode.QuaternionTo, height, count);
+        }
 
         public static TinyTweenHandle JumpTo(Transform target, Vector3 endValue, float height, int count, float duration, bool useLocal = false)
-            => Jump(target, useLocal ? target.localPosition : target.position, endValue, height, count, duration, useLocal);
+        {
+            if (target == null) return default;
+            return StartSafe(target, Vector3.zero, endValue, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Jump, useLocal, true, false, Vector3.zero, Vector3.zero, TinyRotateMode.QuaternionTo, height, count);
+        }
 
         public static TinyTweenHandle Punch(Transform target, Vector3 punchVector, float duration, int vibrato = 3, bool useLocal = false)
-            => TinyTweenRunner.Instance.StartTween(target, useLocal ? target.localPosition : target.position, Vector3.zero, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Punch, useLocal, 0, vibrato, punchVector);
+        {
+            if (target == null) return default;
+            return StartSafe(target, Vector3.zero, Vector3.zero, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Punch, useLocal, true, false, Vector3.zero, Vector3.zero, TinyRotateMode.QuaternionTo, 0f, vibrato, punchVector);
+        }
 
         public static TinyTweenHandle PunchScale(Transform target, Vector3 punchVector, float duration, int vibrato = 3)
-            => TinyTweenRunner.Instance.StartTween(target, Vector3.zero, Vector3.zero, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.PunchScale, true, 0, vibrato, punchVector);
-            
-        public static TinyTweenHandle Float(float from, float to, float duration, Action<float> onUpdate)
         {
-            var handle = TinyTweenRunner.Instance.StartTween(null, new Vector3(from, 0, 0), new Vector3(to, 0, 0), Quaternion.identity, Quaternion.identity, duration, TinyTweenType.CustomFloat, false);
-            
-            var tw = handle.tween;
-            handle.OnUpdate((k) => {
-                float lerpedVal = Mathf.LerpUnclamped(tw.startPos.x, tw.endPos.x, k);
-                onUpdate?.Invoke(lerpedVal);
-            });
-            return handle;
+            if (target == null) return default;
+            return StartSafe(target, Vector3.zero, Vector3.zero, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.PunchScale, true, true, false, Vector3.zero, Vector3.zero, TinyRotateMode.QuaternionTo, 0f, vibrato, punchVector);
+        }
+
+        public static TinyTweenHandle Float(float from, float to, float duration, Action<float> onValue)
+        {
+            return StartSafe(
+                null,
+                new Vector3(from, 0f, 0f),
+                new Vector3(to, 0f, 0f),
+                Quaternion.identity,
+                Quaternion.identity,
+                duration,
+                TinyTweenType.CustomFloat,
+                false,
+                false,
+                false,
+                Vector3.zero,
+                Vector3.zero,
+                TinyRotateMode.QuaternionTo,
+                0f,
+                0,
+                default,
+                onValue);
         }
     }
 
     public static class TinyTweenExtensions
     {
-        public static TinyTweenHandle TMove(this Transform target, Vector3 endValue, float duration) 
+        public static TinyTweenHandle TMove(this Transform target, Vector3 endValue, float duration)
             => TinyTweener.MoveTo(target, endValue, duration, false);
-        
-        public static TinyTweenHandle TLocalMove(this Transform target, Vector3 endValue, float duration) 
+
+        public static TinyTweenHandle TLocalMove(this Transform target, Vector3 endValue, float duration)
             => TinyTweener.MoveTo(target, endValue, duration, true);
 
         public static TinyTweenHandle TMoveBy(this Transform target, Vector3 amount, float duration)
@@ -642,37 +1326,37 @@ namespace TinyTween
         public static TinyTweenHandle TLocalMoveBy(this Transform target, Vector3 amount, float duration)
             => TinyTweener.MoveBy(target, amount, duration, true);
 
-        public static TinyTweenHandle TRotate(this Transform target, Vector3 endValue, float duration)
-            => TinyTweener.RotateTo(target, endValue, duration, false);
-        
+        public static TinyTweenHandle TRotate(this Transform target, Vector3 endEuler, float duration)
+            => TinyTweener.RotateTo(target, endEuler, duration, false);
+
         public static TinyTweenHandle TRotate(this Transform target, Quaternion endValue, float duration)
             => TinyTweener.RotateTo(target, endValue, duration, false);
 
-        public static TinyTweenHandle TLocalRotate(this Transform target, Vector3 endValue, float duration)
-            => TinyTweener.RotateTo(target, endValue, duration, true);
+        public static TinyTweenHandle TLocalRotate(this Transform target, Vector3 endEuler, float duration)
+            => TinyTweener.RotateTo(target, endEuler, duration, true);
 
         public static TinyTweenHandle TLocalRotate(this Transform target, Quaternion endValue, float duration)
             => TinyTweener.RotateTo(target, endValue, duration, true);
 
-        public static TinyTweenHandle TRotateBy(this Transform target, Vector3 amount, float duration)
-            => TinyTweener.RotateBy(target, amount, duration, false);
+        public static TinyTweenHandle TRotateBy(this Transform target, Vector3 eulerAmount, float duration)
+            => TinyTweener.RotateBy(target, eulerAmount, duration, false);
 
-        public static TinyTweenHandle TLocalRotateBy(this Transform target, Vector3 amount, float duration)
-            => TinyTweener.RotateBy(target, amount, duration, true);
+        public static TinyTweenHandle TLocalRotateBy(this Transform target, Vector3 eulerAmount, float duration)
+            => TinyTweener.RotateBy(target, eulerAmount, duration, true);
 
-        public static TinyTweenHandle TJump(this Transform target, Vector3 endValue, float duration, float height, int count) 
+        public static TinyTweenHandle TJump(this Transform target, Vector3 endValue, float duration, float height, int count)
             => TinyTweener.JumpTo(target, endValue, height, count, duration, false);
 
-        public static TinyTweenHandle TLocalJump(this Transform target, Vector3 endValue, float duration, float height, int count) 
+        public static TinyTweenHandle TLocalJump(this Transform target, Vector3 endValue, float duration, float height, int count)
             => TinyTweener.JumpTo(target, endValue, height, count, duration, true);
 
-        public static TinyTweenHandle TPunch(this Transform target, Vector3 punchVector, float duration, int vibrato = 3) 
+        public static TinyTweenHandle TPunch(this Transform target, Vector3 punchVector, float duration, int vibrato = 3)
             => TinyTweener.Punch(target, punchVector, duration, vibrato, false);
 
-        public static TinyTweenHandle TLocalPunch(this Transform target, Vector3 punchVector, float duration, int vibrato = 3) 
+        public static TinyTweenHandle TLocalPunch(this Transform target, Vector3 punchVector, float duration, int vibrato = 3)
             => TinyTweener.Punch(target, punchVector, duration, vibrato, true);
-        
-        public static TinyTweenHandle TPunchScale(this Transform target, Vector3 punchVector, float duration, int vibrato = 3) 
+
+        public static TinyTweenHandle TPunchScale(this Transform target, Vector3 punchVector, float duration, int vibrato = 3)
             => TinyTweener.PunchScale(target, punchVector, duration, vibrato);
 
         public static void Kill(this TinyTweenHandle handle) => handle.Kill();
