@@ -216,8 +216,7 @@ namespace TinyTween
             tween.durationResolved = false;
 
             tween.estimatedDuration = TinyTweenRunner.EstimateSpeedBasedDuration(tween);
-
-            // Eğer tween zaten başlamışsa veya sequence için zorlanmışsa hemen hesapla
+            
             if (tween.started)
                 TinyTweenRunner.ResolveDurationIfNeeded(tween);
 
@@ -307,9 +306,6 @@ namespace TinyTween
                 return this;
             }
 
-            // KRİTİK FİX: Sadece SpeedBased olanları önceden resolve et.
-            // Normal tween'ler (Duration bazlı) çalışacağı zaman pozisyon yakalasın.
-            // Böylece Sequence içinde MoveTo düzgün çalışır.
             if (handle.tween.speedBased)
             {
                 TinyTweenRunner.ForceStartAndResolveForSequence(handle.tween);
@@ -655,7 +651,6 @@ namespace TinyTween
 
             if (tw.type == TinyTweenType.Move || tw.type == TinyTweenType.Jump)
             {
-                // Speed based'de gerçek zamanlı hesaplama için:
                 Vector3 currentStart = tw.baseStartPos;
                 if (tw.started && tw.captureStartOnPlay && tw.target != null) 
                    currentStart = tw.useLocal ? tw.target.localPosition : tw.target.position;
@@ -941,7 +936,6 @@ namespace TinyTween
                 if (activeTime < 0f)
                     continue;
 
-                // Tween zamanı geldiğinde başlamasını sağla (Sequence için kritik)
                 EnsureStarted(tw);
                 ResolveDurationIfNeeded(tw);
 
@@ -1370,3 +1364,4 @@ namespace TinyTween
         public static TinyTweenHandle OnUpdate(this TinyTweenHandle handle, Action<float> callback) => handle.OnUpdate(callback);
     }
 }
+
