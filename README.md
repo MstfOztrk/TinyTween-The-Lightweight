@@ -1,132 +1,205 @@
-🚀 TinyTween
+# TinyTween
 
-TinyTween is a lightweight, zero-allocation, performance-focused tweening library for Unity. Built with struct-based handles and an internal object pooling system, it allows you to animate properties without triggering Garbage Collection (GC) overhead.
-Personally, I use it for playable ads.
-Key Goal: To provide a robust "DOTween-like" experience with a fraction of the memory footprint.
+TinyTween is a lightweight tween utility for Unity, designed for projects that care about low overhead and predictable runtime behavior.
 
-✨ Features
-Zero Allocation Handles: Uses struct handles to manipulate tweens, preventing memory garbage.
+It lives in a single file at `Assets/GameAssets/Scripts/TinyTween.cs`, uses pooled tween instances internally, and was built mainly for playable ad workflows where memory churn and package weight matter.
 
-Object Pooling: Internal Stack pooling keeps the runtime memory footprint extremely low.
+## Why TinyTween
 
-Fluent API: Chain commands easily (SetEase, SetLoops, OnComplete).
+- Single-file setup, no extra DLLs or packages
+- Struct-based handles for tween control
+- Internal pooling for low runtime overhead
+- Fluent API for ease, loops, delay, callbacks, and time-scale control
+- Sequence support with `Append`, `Join`, and `AppendInterval`
+- Built-in Penner-style easing set
+- Speed-based tweening for supported types
 
-Powerful Sequences: Create complex timelines with Append, Join, and AppendInterval.
+## Performance Notes
 
-Rich Easing Library: Includes all standard Penner easing equations (In/Out/InOut Quad, Bounce, Elastic, Back, etc.).
+TinyTween is optimized so the steady-state update path stays GC-friendly.
 
-📦 Installation
-Simply drop the TinyTween folder into your Unity project's Assets directory. No complex setup required.
+Important nuance:
 
-⚡ Quick Start
-1. Basic Movement
-Use extension methods for the quickest syntax.
+- Transform and float tweens are designed to avoid per-frame allocations in normal playback
+- Tween creation can still allocate on first use or when the pool grows
+- User code can still allocate if it uses captured lambdas or multicast delegate patterns
 
-C#
+If you want to reduce first-use spikes, call:
 
+```csharp
+TinyTweener.Warmup(64);
+```
+
+This creates the runner and pre-fills the internal tween pool.
+
+## Installation
+
+No package install is required.
+
+1. Copy `Assets/GameAssets/Scripts/TinyTween.cs` into your project.
+2. Optional: copy the scenario runner files if you also want the runtime test suite.
+
+## Quick Start
+
+```csharp
 using TinyTween;
+using UnityEngine;
 
-// Move to world position (10, 0, 0) in 1 second
-transform.TMove(new Vector3(10, 0, 0), 1f);
-
-// Move to local position
-transform.TLocalMove(new Vector3(5, 5, 0), 0.5f);
-2. Chaining Settings (Fluent API)
-You can chain multiple settings like Easing, Loops, and Callbacks.
-
-C#
-
-transform.TMove(new Vector3(10, 0, 0), 2f)
-    .SetEase(TinyEaseType.OutBounce)
-    .SetLoops(2, TinyLoopType.Yoyo) // Go there and come back
-    .SetDelay(0.5f)
-    .OnComplete(() => Debug.Log("Motion Finished!"));
-🎮 Core Animations
-Jump
-Simulates a parabolic jump movement.
-
-C#
-
-// Jump to target, with jump power of 3, doing 2 bounces, in 1 second
-transform.TJump(targetPosition, 1f, 3f, 2).SetEase(TinyEaseType.Linear);
-Punch (Vibration)
-Great for impacts, UI clicks, or damage effects.
-
-Position Punch: Shakes the object.
-
-Scale Punch: Squeezes/stretches the object (Jelly effect).
-
-C#
-
-// Shake position with vector (1,1,0), duration 0.5s, vibrato 5
-transform.TPunch(new Vector3(1, 1, 0), 0.5f, 5);
-
-// Scale punch (Jelly effect)
-transform.TPunchScale(Vector3.one * 0.5f, 0.3f, 4);
-Generic Float Tween
-Tween any float value (e.g., UI Alpha, Sound Volume, Shader Properties).
-
-C#
-
-TinyTweener.Float(0f, 1f, 1.5f, (val) => 
+public sealed class Example : MonoBehaviour
 {
-    myCanvasGroup.alpha = val; // Update UI opacity
+    void Start()
+    {
+        TinyTweener.Warmup(64);
+
+        transform.TMove(new Vector3(10f, 0f, 0f), 1f)
+            .SetEase(TinyEaseType.OutCubic);
+    }
+}
+```
+
+## Common Usage
+
+### Move
+
+```csharp
+transform.TMove(new Vector3(10f, 0f, 0f), 1f);
+transform.TLocalMove(new Vector3(0f, 2f, 0f), 0.5f);
+transform.TMoveBy(new Vector3(1f, 0f, 0f), 0.25f);
+```
+
+### Rotate
+
+```csharp
+transform.TRotate(new Vector3(0f, 180f, 0f), 0.5f);
+transform.TLocalRotateBy(new Vector3(0f, 90f, 0f), 0.3f);
+```
+
+### Jump
+
+```csharp
+transform.TJump(targetPosition, 1f, 3f, 2)
+    .SetEase(TinyEaseType.Linear);
+```
+
+### Punch
+
+```csharp
+transform.TPunch(new Vector3(1f, 0f, 0f), 0.35f, 4);
+transform.TPunchScale(Vector3.one * 0.25f, 0.25f, 4);
+```
+
+### Float
+
+```csharp
+TinyTweener.Float(0f, 1f, 0.4f, value =>
+{
+    canvasGroup.alpha = value;
 })
 .SetEase(TinyEaseType.InOutSine);
-🎞️ Sequences
-Sequences allow you to organize tweens into a timeline.
+```
 
-Append: Adds a tween to the end of the timeline.
+## Fluent API
 
-Join: Adds a tween that runs simultaneously with the previous tween.
+```csharp
+transform.TMove(new Vector3(10f, 0f, 0f), 2f)
+    .SetEase(TinyEaseType.OutBounce)
+    .SetLoops(2, TinyLoopType.Yoyo)
+    .SetDelay(0.2f)
+    .SetIgnoreTimeScale(true)
+    .OnComplete(OnMoveFinished);
+```
 
-C#
+## Sequences
 
-var seq = TinyTweener.Sequence();
+```csharp
+var sequence = TinyTweener.Sequence();
 
-// 1. Move to right
-seq.Append(transform.TMove(new Vector3(5, 0, 0), 1f));
+sequence.Append(transform.TMove(new Vector3(4f, 0f, 0f), 0.4f));
+sequence.Join(transform.TPunchScale(Vector3.one * 0.15f, 0.4f));
+sequence.AppendInterval(0.15f);
+sequence.Append(transform.TMove(Vector3.zero, 0.4f));
+```
 
-// 2. Rotate or Scale at the same time (Join)
-seq.Join(transform.TPunchScale(Vector3.one, 1f));
+## Speed-Based Tweens
 
-// 3. Wait for 0.5 seconds
-seq.AppendInterval(0.5f);
+For supported tween types, `SetSpeedBased()` interprets the duration parameter as speed.
 
-// 4. Return to start
-seq.Append(transform.TMove(Vector3.zero, 1f));
-🔄 Loops
-TinyTween supports 3 loop types:
+Supported:
 
-Restart: Resets to start value and plays again.
+- `Move`
+- `Jump`
+- `Rotate`
+- `Float`
 
-Yoyo: Plays forward, then backwards (Ping-Pong).
+Example:
 
-Incremental: Continues movement from the last position (useful for infinite scrolling or continuous rotation).
+```csharp
+transform.TMove(new Vector3(5f, 0f, 0f), 4f)
+    .SetEase(TinyEaseType.Linear)
+    .SetSpeedBased();
+```
 
-C#
+In the example above, `4f` means `4 units per second`, not `4 seconds`.
 
-// Infinite rotating or moving
-transform.TMove(new Vector3(1, 0, 0), 1f)
+## Loop Types
+
+- `Restart`: plays from the beginning again
+- `Yoyo`: plays forward, then backward
+- `Incremental`: keeps advancing from the previous loop result
+
+```csharp
+transform.TMoveBy(new Vector3(1f, 0f, 0f), 0.5f)
     .SetLoops(-1, TinyLoopType.Incremental);
-🛠️ Management
-You can store the TinyTweenHandle to control the tween later.
+```
 
-C#
+## Handle Management
 
-TinyTweenHandle myTween = transform.TMove(target, 1f);
+```csharp
+TinyTweenHandle tween = transform.TMove(targetPosition, 1f);
 
-// Later...
-if (myTween.IsValid)
+if (tween.IsValid)
 {
-    myTween.Kill();    // Stop immediately
-    // OR
-    myTween.Complete(); // Fast-forward to end and trigger OnComplete
+    tween.Kill();
+    // or
+    tween.Complete();
 }
-🛑 Limitations / Notes
-Struct-Based Handles: The TinyTweenHandle is a struct. It cannot be null. To check if a tween exists, use handle.IsValid.
+```
 
-Unity Objects: If the target Transform is destroyed while a tween is running, TinyTween automatically handles the exception and safely cleans up the tween.
+## Testing
 
-❤️ License
-This project is licensed under the MIT License - see the LICENSE file for details.
+The project includes a runtime scenario suite for contract testing and behavior probes.
+
+Related files:
+
+- `Assets/GameAssets/Scripts/TinyTweenScenarioRunner.cs`
+- `Assets/GameAssets/Scripts/Editor/TinyTweenScenarioRunnerMenu.cs`
+
+Current suite coverage includes:
+
+- core motion and rotation
+- delays, completion, killing, and zero-duration cases
+- loops, yoyo, and incremental behavior
+- jump, punch, and punch-scale behavior
+- time-scale handling
+- speed-based tweening
+- sequence timing and future-state handling
+- allocation observation probes
+
+## Notes and Limitations
+
+- `TinyTweenHandle` is a struct, so use `handle.IsValid` instead of null checks
+- If a target `Transform` is destroyed during playback, TinyTween safely drops the tween
+- `SetSpeedBased()` is intended for move, jump, rotate, and float tweens
+- Ultra-short durations with elastic or bounce eases may still look aggressive between frames, even if final values are correct
+- If you use captured lambdas in callbacks, that allocation behavior comes from the callback usage, not the tween update loop itself
+
+## Intended Use
+
+TinyTween was built for lean Unity projects and playable ads where:
+
+- package size matters
+- startup spikes matter
+- runtime GC pressure matters
+- a small DOTween-like API is enough
+
+If you need a minimal tween layer without bringing in a larger dependency, TinyTween is a good fit.
