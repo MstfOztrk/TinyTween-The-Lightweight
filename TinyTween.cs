@@ -156,7 +156,7 @@ namespace TinyTween
         }
     }
 
-    public readonly struct TinyTweenHandle
+    public struct TinyTweenHandle
     {
         internal readonly TinyTweenInstance tween;
         readonly long id;
@@ -206,6 +206,12 @@ namespace TinyTween
         {
             if (!IsValid) return this;
             if (tween.timingSealed) return this;
+
+            if (tween.type != TinyTweenType.Move &&
+                tween.type != TinyTweenType.Jump &&
+                tween.type != TinyTweenType.Rotate &&
+                tween.type != TinyTweenType.CustomFloat)
+                return this;
 
             float spd = tween.duration;
             if (spd <= 0f) return this;
@@ -292,41 +298,60 @@ namespace TinyTween
 
     public sealed class TinySequence
     {
-        float _cursor;
-        float _prevCursor;
-        bool _locked;
+        struct ScheduledTweenState
+        {
+            public TinyTweenInstance tween;
+            public float startTime;
+            public float cycleDuration;
+            public float totalDuration;
+            public bool hasPosition;
+            public Vector3 startPos;
+            public Vector3 endPos;
+            public bool hasRotation;
+            public Quaternion startRot;
+            public Quaternion endRot;
+            public Vector3 startEuler;
+            public Vector3 endEuler;
+        }
+
+        const float SequenceCycleEpsilon = 0.000001f;
+
+        float cursor;
+        float prevCursor;
+        bool locked;
+        readonly List<ScheduledTweenState> scheduledTweens = new List<ScheduledTweenState>(8);
 
         public TinySequence Append(TinyTweenHandle handle)
         {
             if (!handle.IsValid) return this;
 
-            if (_locked)
+            if (locked)
             {
                 handle.Kill();
                 return this;
             }
 
-            if (handle.tween.speedBased)
-            {
-                TinyTweenRunner.ForceStartAndResolveForSequence(handle.tween);
-            }
-
             float d = handle.GetDelay();
+            float startTime = cursor + d;
+
+            PrepareHandleForSequence(handle.tween, startTime);
+
             float dur = handle.GetTotalDurationEstimate();
 
-            handle.SetDelayRaw(_cursor + d);
-            _prevCursor = _cursor;
+            handle.SetDelayRaw(startTime);
+            prevCursor = cursor;
 
             handle.SealTiming();
+            TrackScheduledTween(handle.tween, startTime, dur);
 
             if (float.IsPositiveInfinity(dur))
             {
-                _cursor = float.PositiveInfinity;
-                _locked = true;
+                cursor = float.PositiveInfinity;
+                locked = true;
                 return this;
             }
 
-            _cursor += dur + d;
+            cursor += dur + d;
             return this;
         }
 
@@ -334,48 +359,515 @@ namespace TinyTween
         {
             if (!handle.IsValid) return this;
 
-            if (_locked)
+            if (locked)
             {
                 handle.Kill();
                 return this;
             }
 
-            if (handle.tween.speedBased)
-            {
-                TinyTweenRunner.ForceStartAndResolveForSequence(handle.tween);
-            }
-
             float d = handle.GetDelay();
+            float startTime = prevCursor + d;
+
+            PrepareHandleForSequence(handle.tween, startTime);
+
             float dur = handle.GetTotalDurationEstimate();
 
-            handle.SetDelayRaw(_prevCursor + d);
+            handle.SetDelayRaw(startTime);
 
             handle.SealTiming();
+            TrackScheduledTween(handle.tween, startTime, dur);
 
             if (float.IsPositiveInfinity(dur))
             {
-                _cursor = float.PositiveInfinity;
-                _locked = true;
+                cursor = float.PositiveInfinity;
+                locked = true;
                 return this;
             }
 
-            float end = _prevCursor + d + dur;
-            if (end > _cursor) _cursor = end;
+            float end = prevCursor + d + dur;
+            if (end > cursor) cursor = end;
 
             return this;
         }
 
         public TinySequence AppendInterval(float interval)
         {
-            if (_locked)
+            if (locked)
             {
-                _cursor = float.PositiveInfinity;
+                cursor = float.PositiveInfinity;
                 return this;
             }
 
-            _prevCursor = _cursor;
-            _cursor += interval;
+            prevCursor = cursor;
+            cursor += interval;
             return this;
+        }
+
+        void PrepareHandleForSequence(TinyTweenInstance tw, float startTime)
+        {
+            if (tw == null || !tw.speedBased)
+                return;
+
+            bool hasPositionStart = TryResolvePositionStart(tw, startTime, out Vector3 positionStart);
+            bool hasRotationStart = TryResolveRotationStart(tw, startTime, out Quaternion rotationStart, out _);
+
+            TinyTweenRunner.PrepareSpeedBasedForSequence(
+                tw,
+                hasPositionStart,
+                positionStart,
+                hasRotationStart,
+                rotationStart);
+        }
+
+        void TrackScheduledTween(TinyTweenInstance tw, float startTime, float totalDuration)
+        {
+            if (tw == null)
+                return;
+
+            ScheduledTweenState state = new ScheduledTweenState
+            {
+                tween = tw,
+                startTime = startTime,
+                cycleDuration = GetCycleDuration(tw),
+                totalDuration = totalDuration
+            };
+
+            if (TryResolvePositionStart(tw, startTime, out Vector3 startPos))
+            {
+                state.hasPosition = true;
+                state.startPos = startPos;
+                state.endPos = ResolveEndPosition(tw, startPos);
+            }
+
+            if (TryResolveRotationStart(tw, startTime, out Quaternion startRot, out Vector3 startEuler))
+            {
+                state.hasRotation = true;
+                state.startRot = startRot;
+                state.startEuler = startEuler;
+
+                if (tw.rotateMode == TinyRotateMode.EulerRelative)
+                {
+                    state.endEuler = startEuler + tw.relativeEuler;
+                    state.endRot = Quaternion.Euler(state.endEuler);
+                }
+                else
+                {
+                    state.endRot = tw.baseEndRot;
+                    state.endEuler = state.endRot.eulerAngles;
+                }
+            }
+
+            scheduledTweens.Add(state);
+        }
+
+        static float GetCycleDuration(TinyTweenInstance tw)
+        {
+            if (tw == null)
+                return 0f;
+
+            if (tw.speedBased && !tw.durationResolved)
+                return tw.estimatedDuration;
+
+            return tw.duration;
+        }
+
+        static Vector3 ResolveEndPosition(TinyTweenInstance tw, Vector3 startPos)
+        {
+            if (tw.type == TinyTweenType.Punch)
+                return startPos;
+
+            if (tw.isRelative)
+                return startPos + tw.relativePos;
+
+            return tw.baseEndPos;
+        }
+
+        bool TryResolvePositionStart(TinyTweenInstance tw, float startTime, out Vector3 value)
+        {
+            value = Vector3.zero;
+
+            if (tw == null)
+                return false;
+
+            if (tw.type != TinyTweenType.Move &&
+                tw.type != TinyTweenType.Jump &&
+                tw.type != TinyTweenType.Punch)
+                return false;
+
+            if (!tw.captureStartOnPlay)
+            {
+                value = tw.baseStartPos;
+                return true;
+            }
+
+            if (tw.target == null)
+            {
+                value = tw.baseStartPos;
+                return true;
+            }
+
+            if (TryEvaluatePositionAt(tw.target, tw.useLocal, startTime, out value))
+                return true;
+
+            value = tw.useLocal ? tw.target.localPosition : tw.target.position;
+            return true;
+        }
+
+        bool TryResolveRotationStart(TinyTweenInstance tw, float startTime, out Quaternion rotation, out Vector3 euler)
+        {
+            rotation = Quaternion.identity;
+            euler = Vector3.zero;
+
+            if (tw == null || tw.type != TinyTweenType.Rotate)
+                return false;
+
+            if (tw.rotateMode == TinyRotateMode.EulerRelative)
+            {
+                if (!tw.captureStartOnPlay)
+                {
+                    euler = tw.baseStartEuler;
+                    rotation = Quaternion.Euler(euler);
+                    return true;
+                }
+
+                if (tw.target == null)
+                {
+                    euler = tw.baseStartEuler;
+                    rotation = Quaternion.Euler(euler);
+                    return true;
+                }
+
+                if (TryEvaluateRotationAt(tw.target, tw.useLocal, startTime, out rotation))
+                {
+                    euler = rotation.eulerAngles;
+                    return true;
+                }
+
+                euler = tw.useLocal ? tw.target.localEulerAngles : tw.target.eulerAngles;
+                rotation = Quaternion.Euler(euler);
+                return true;
+            }
+
+            if (!tw.captureStartOnPlay)
+            {
+                rotation = tw.baseStartRot;
+                euler = rotation.eulerAngles;
+                return true;
+            }
+
+            if (tw.target == null)
+            {
+                rotation = tw.baseStartRot;
+                euler = rotation.eulerAngles;
+                return true;
+            }
+
+            if (TryEvaluateRotationAt(tw.target, tw.useLocal, startTime, out rotation))
+            {
+                euler = rotation.eulerAngles;
+                return true;
+            }
+
+            rotation = tw.useLocal ? tw.target.localRotation : tw.target.rotation;
+            euler = rotation.eulerAngles;
+            return true;
+        }
+
+        bool TryEvaluatePositionAt(Transform target, bool useLocal, float time, out Vector3 value)
+        {
+            for (int i = scheduledTweens.Count - 1; i >= 0; i--)
+            {
+                ScheduledTweenState state = scheduledTweens[i];
+                if (!state.hasPosition)
+                    continue;
+
+                TinyTweenInstance tween = state.tween;
+                if (tween == null || tween.target != target || tween.useLocal != useLocal)
+                    continue;
+
+                if (time < state.startTime)
+                    continue;
+
+                value = EvaluateScheduledPosition(state, time);
+                return true;
+            }
+
+            value = Vector3.zero;
+            return false;
+        }
+
+        bool TryEvaluateRotationAt(Transform target, bool useLocal, float time, out Quaternion value)
+        {
+            for (int i = scheduledTweens.Count - 1; i >= 0; i--)
+            {
+                ScheduledTweenState state = scheduledTweens[i];
+                if (!state.hasRotation)
+                    continue;
+
+                TinyTweenInstance tween = state.tween;
+                if (tween == null || tween.target != target || tween.useLocal != useLocal)
+                    continue;
+
+                if (time < state.startTime)
+                    continue;
+
+                value = EvaluateScheduledRotation(state, time);
+                return true;
+            }
+
+            value = Quaternion.identity;
+            return false;
+        }
+
+        Vector3 EvaluateScheduledPosition(ScheduledTweenState state, float time)
+        {
+            TinyTweenInstance tw = state.tween;
+            if (tw == null)
+                return state.endPos;
+
+            if (state.cycleDuration <= 0f)
+                return EvaluateCompletedPosition(tw, state.startPos, state.endPos);
+
+            float localTime = time - state.startTime;
+            if (localTime <= 0f)
+                return state.startPos;
+
+            return EvaluatePositionValue(tw, state.startPos, state.endPos, localTime, state.cycleDuration, state.totalDuration);
+        }
+
+        Quaternion EvaluateScheduledRotation(ScheduledTweenState state, float time)
+        {
+            TinyTweenInstance tw = state.tween;
+            if (tw == null)
+                return state.endRot;
+
+            if (state.cycleDuration <= 0f)
+                return EvaluateCompletedRotation(tw, state.startRot, state.endRot, state.startEuler, state.endEuler);
+
+            float localTime = time - state.startTime;
+            if (localTime <= 0f)
+                return state.startRot;
+
+            return EvaluateRotationValue(tw, state.startRot, state.endRot, state.startEuler, state.endEuler, localTime, state.cycleDuration, state.totalDuration);
+        }
+
+        Vector3 EvaluatePositionValue(TinyTweenInstance tw, Vector3 startPos, Vector3 endPos, float localTime, float cycleDuration, float totalDuration)
+        {
+            if (tw == null)
+                return endPos;
+
+            int loops = tw.loopsTotal;
+            if (loops == 0) loops = 1;
+
+            bool finished = loops != -1 && localTime >= totalDuration;
+            if (finished)
+                return EvaluateCompletedPosition(tw, startPos, endPos);
+
+            float tForCycle = localTime;
+            if (tForCycle > 0f)
+            {
+                tForCycle -= SequenceCycleEpsilon;
+                if (tForCycle < 0f) tForCycle = 0f;
+            }
+
+            long cycleIndexL = (long)(tForCycle / cycleDuration);
+            if (loops != -1 && cycleIndexL >= loops)
+                cycleIndexL = loops - 1;
+            if (cycleIndexL < 0) cycleIndexL = 0;
+
+            float cycleTime = localTime - ((float)cycleIndexL * cycleDuration);
+            float progress = cycleTime / cycleDuration;
+            if (progress < 0f) progress = 0f;
+            if (progress > 1f) progress = 1f;
+
+            float k = TinyTweenRunner.EvaluateEase(tw.easeType, progress);
+            int parity = (int)(cycleIndexL & 1L);
+            int cycleIndex = cycleIndexL > int.MaxValue ? int.MaxValue : (int)cycleIndexL;
+
+            if (tw.type == TinyTweenType.Punch)
+            {
+                float punchFactor = TinyTweenRunner.EvaluatePunchFactor(progress, k, tw.jumpCount);
+                return startPos + (tw.punch * punchFactor);
+            }
+
+            Vector3 s = startPos;
+            Vector3 e = endPos;
+
+            if ((tw.type == TinyTweenType.Move || tw.type == TinyTweenType.Jump) && tw.loopType == TinyLoopType.Incremental && cycleIndexL > 0)
+            {
+                Vector3 diff = endPos - startPos;
+                s = startPos + diff * cycleIndex;
+                e = endPos + diff * cycleIndex;
+            }
+            else if ((tw.type == TinyTweenType.Move || tw.type == TinyTweenType.Jump) && tw.loopType == TinyLoopType.Yoyo && parity == 1)
+            {
+                Vector3 tmp = s;
+                s = e;
+                e = tmp;
+            }
+
+            Vector3 result = Vector3.LerpUnclamped(s, e, k);
+            if (tw.type == TinyTweenType.Jump)
+            {
+                float jumpProgress = k * tw.jumpCount * Mathf.PI;
+                if (k < 1f) result.y += Mathf.Sin(jumpProgress) * tw.jumpHeight;
+            }
+
+            return result;
+        }
+
+        Quaternion EvaluateRotationValue(TinyTweenInstance tw, Quaternion startRot, Quaternion endRot, Vector3 startEuler, Vector3 endEuler, float localTime, float cycleDuration, float totalDuration)
+        {
+            if (tw == null)
+                return endRot;
+
+            int loops = tw.loopsTotal;
+            if (loops == 0) loops = 1;
+
+            bool finished = loops != -1 && localTime >= totalDuration;
+            if (finished)
+                return EvaluateCompletedRotation(tw, startRot, endRot, startEuler, endEuler);
+
+            float tForCycle = localTime;
+            if (tForCycle > 0f)
+            {
+                tForCycle -= SequenceCycleEpsilon;
+                if (tForCycle < 0f) tForCycle = 0f;
+            }
+
+            long cycleIndexL = (long)(tForCycle / cycleDuration);
+            if (loops != -1 && cycleIndexL >= loops)
+                cycleIndexL = loops - 1;
+            if (cycleIndexL < 0) cycleIndexL = 0;
+
+            float cycleTime = localTime - ((float)cycleIndexL * cycleDuration);
+            float progress = cycleTime / cycleDuration;
+            if (progress < 0f) progress = 0f;
+            if (progress > 1f) progress = 1f;
+
+            float k = TinyTweenRunner.EvaluateEase(tw.easeType, progress);
+            int parity = (int)(cycleIndexL & 1L);
+
+            if (tw.rotateMode == TinyRotateMode.EulerRelative)
+            {
+                Vector3 s = startEuler;
+                Vector3 e = endEuler;
+
+                if (tw.loopType == TinyLoopType.Incremental && cycleIndexL > 0)
+                {
+                    int cycleIndex = cycleIndexL > int.MaxValue ? int.MaxValue : (int)cycleIndexL;
+                    Vector3 diff = endEuler - startEuler;
+                    s = startEuler + diff * cycleIndex;
+                    e = startEuler + diff * (cycleIndex + 1);
+                }
+                else if (tw.loopType == TinyLoopType.Yoyo && parity == 1)
+                {
+                    Vector3 tmp = s;
+                    s = e;
+                    e = tmp;
+                }
+
+                return Quaternion.Euler(Vector3.LerpUnclamped(s, e, k));
+            }
+
+            Quaternion start = startRot;
+            Quaternion end = endRot;
+
+            if (tw.loopType == TinyLoopType.Incremental && cycleIndexL > 0)
+            {
+                Quaternion diff = endRot * Quaternion.Inverse(startRot);
+                diff.ToAngleAxis(out float angle, out Vector3 axis);
+                if (angle > 180f) angle -= 360f;
+
+                Quaternion stepA = Quaternion.AngleAxis(angle * cycleIndexL, axis);
+                Quaternion stepB = Quaternion.AngleAxis(angle * (cycleIndexL + 1), axis);
+
+                start = startRot * stepA;
+                end = startRot * stepB;
+            }
+            else if (tw.loopType == TinyLoopType.Yoyo && parity == 1)
+            {
+                Quaternion tmp = start;
+                start = end;
+                end = tmp;
+            }
+
+            Quaternion result = Quaternion.SlerpUnclamped(start, end, k);
+            if (k < 0f || k > 1f)
+                result = TinyTweenRunner.NormalizeQuaternion(result);
+            return result;
+        }
+
+        static Vector3 EvaluateCompletedPosition(TinyTweenInstance tw, Vector3 startPos, Vector3 endPos)
+        {
+            int loops = tw.loopsTotal;
+            if (loops == 0) loops = 1;
+
+            if (tw.type == TinyTweenType.Punch)
+                return startPos;
+
+            if (loops == -1)
+                return endPos;
+
+            if (tw.loopType == TinyLoopType.Yoyo)
+                return (loops % 2 == 0) ? startPos : endPos;
+
+            if (tw.loopType == TinyLoopType.Incremental && loops > 1)
+            {
+                Vector3 diff = endPos - startPos;
+                return startPos + diff * loops;
+            }
+
+            return endPos;
+        }
+
+        static Quaternion EvaluateCompletedRotation(TinyTweenInstance tw, Quaternion startRot, Quaternion endRot, Vector3 startEuler, Vector3 endEuler)
+        {
+            int loops = tw.loopsTotal;
+            if (loops == 0) loops = 1;
+
+            if (tw.rotateMode == TinyRotateMode.EulerRelative)
+            {
+                Vector3 finalEuler;
+
+                if (loops == -1)
+                {
+                    finalEuler = endEuler;
+                }
+                else if (tw.loopType == TinyLoopType.Yoyo)
+                {
+                    finalEuler = (loops % 2 == 0) ? startEuler : endEuler;
+                }
+                else if (tw.loopType == TinyLoopType.Incremental && loops > 1)
+                {
+                    Vector3 diff = endEuler - startEuler;
+                    finalEuler = startEuler + diff * loops;
+                }
+                else
+                {
+                    finalEuler = endEuler;
+                }
+
+                return Quaternion.Euler(finalEuler);
+            }
+
+            if (loops == -1)
+                return endRot;
+
+            if (tw.loopType == TinyLoopType.Yoyo)
+                return (loops % 2 == 0) ? startRot : endRot;
+
+            if (tw.loopType == TinyLoopType.Incremental && loops > 1)
+            {
+                Quaternion diff = endRot * Quaternion.Inverse(startRot);
+                diff.ToAngleAxis(out float angle, out Vector3 axis);
+                if (angle > 180f) angle -= 360f;
+
+                Quaternion step = Quaternion.AngleAxis(angle * loops, axis);
+                return startRot * step;
+            }
+
+            return endRot;
         }
     }
 
@@ -437,7 +929,18 @@ namespace TinyTween
             }
         }
 
-        static Quaternion NormalizeQuaternion(Quaternion q)
+        internal void Warmup(int tweenCapacity)
+        {
+            if (tweenCapacity < 0) tweenCapacity = 0;
+
+            if (activeTweens.Capacity < tweenCapacity)
+                activeTweens.Capacity = tweenCapacity;
+
+            while (pool.Count < tweenCapacity)
+                pool.Push(new TinyTweenInstance());
+        }
+
+        internal static Quaternion NormalizeQuaternion(Quaternion q)
         {
             float mag = Mathf.Sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
             if (mag > 0f)
@@ -468,10 +971,10 @@ namespace TinyTween
             TinyRotateMode rotateMode,
             float jumpHeight = 0f,
             int jumpCount = 0,
-            Vector3 punchVector = default,
+            Vector3 punchVector = default(Vector3),
             Action<float> customSetter = null)
         {
-            if (isQuitting) return default;
+            if (isQuitting) return default(TinyTweenHandle);
 
             TinyTweenInstance tw = pool.Count > 0 ? pool.Pop() : new TinyTweenInstance();
             tw.Reset();
@@ -560,9 +1063,24 @@ namespace TinyTween
             }
         }
 
-        internal static void ForceStartAndResolveForSequence(TinyTweenInstance tw)
+        internal static void PrepareSpeedBasedForSequence(TinyTweenInstance tw)
+        {
+            PrepareSpeedBasedForSequence(tw, false, Vector3.zero, false, Quaternion.identity);
+        }
+
+        internal static void PrepareSpeedBasedForSequence(TinyTweenInstance tw, bool hasPositionStart, Vector3 positionStart, bool hasRotationStart, Quaternion rotationStart)
         {
             if (tw == null) return;
+            if (!tw.speedBased) return;
+
+            if (tw.captureStartOnPlay && tw.type != TinyTweenType.CustomFloat)
+            {
+                // Sequence timing needs an estimate now, but actual motion should still
+                // capture the true start state when the tween begins later.
+                tw.estimatedDuration = EstimateSpeedBasedDuration(tw, hasPositionStart, positionStart, hasRotationStart, rotationStart);
+                tw.durationResolved = false;
+                return;
+            }
 
             if (!tw.started)
             {
@@ -592,6 +1110,11 @@ namespace TinyTween
 
         internal static float EstimateSpeedBasedDuration(TinyTweenInstance tw)
         {
+            return EstimateSpeedBasedDuration(tw, false, Vector3.zero, false, Quaternion.identity);
+        }
+
+        internal static float EstimateSpeedBasedDuration(TinyTweenInstance tw, bool hasPositionStart, Vector3 positionStart, bool hasRotationStart, Quaternion rotationStart)
+        {
             if (tw == null) return 0f;
             float spd = tw.speed;
             if (spd <= 0f) return 0f;
@@ -607,7 +1130,9 @@ namespace TinyTween
                 else
                 {
                     Vector3 s = tw.baseStartPos;
-                    if (tw.captureStartOnPlay && tw.target != null)
+                    if (hasPositionStart)
+                        s = positionStart;
+                    else if (tw.captureStartOnPlay && tw.target != null)
                         s = tw.useLocal ? tw.target.localPosition : tw.target.position;
                     dist = Vector3.Distance(s, tw.baseEndPos);
                 }
@@ -621,7 +1146,9 @@ namespace TinyTween
                 else
                 {
                     Quaternion s = tw.baseStartRot;
-                    if (tw.captureStartOnPlay && tw.target != null)
+                    if (hasRotationStart)
+                        s = rotationStart;
+                    else if (tw.captureStartOnPlay && tw.target != null)
                         s = tw.useLocal ? tw.target.localRotation : tw.target.rotation;
                     dist = Quaternion.Angle(s, tw.baseEndRot);
                 }
@@ -872,7 +1399,7 @@ namespace TinyTween
             else tw.target.position = finalPos;
         }
 
-        float EvaluateEase(TinyEaseType ease, float t)
+        internal static float EvaluateEase(TinyEaseType ease, float t)
         {
             switch (ease)
             {
@@ -909,6 +1436,35 @@ namespace TinyTween
                 case TinyEaseType.InOutBounce: return t < 0.5f ? (1f - EvaluateEase(TinyEaseType.OutBounce, 1f - 2f * t)) / 2f : (1f + EvaluateEase(TinyEaseType.OutBounce, 2f * t - 1f)) / 2f;
                 default: return t;
             }
+        }
+
+        static float EvaluateCustomFloatValue(TinyTweenInstance tw, float easedProgress, long cycleIndexL, int cycleIndex, int parity)
+        {
+            float from = tw.customFloatFrom;
+            float to = tw.customFloatTo;
+
+            if (tw.loopType == TinyLoopType.Incremental && cycleIndexL > 0)
+            {
+                float diff = to - from;
+                float start = from + diff * cycleIndex;
+                float end = from + diff * (cycleIndex + 1);
+                return Mathf.LerpUnclamped(start, end, easedProgress);
+            }
+
+            if (tw.loopType == TinyLoopType.Yoyo && parity == 1)
+                return Mathf.LerpUnclamped(to, from, easedProgress);
+
+            return Mathf.LerpUnclamped(from, to, easedProgress);
+        }
+
+        internal static float EvaluatePunchFactor(float progress, float easedProgress, int vibrato)
+        {
+            if (vibrato <= 0) return 0f;
+
+            float punchTime = progress * vibrato * PI * 2f;
+            float decay = 1f - easedProgress;
+            float finalDecay = decay * decay * decay;
+            return Mathf.Sin(punchTime) * finalDecay;
         }
 
         void Update()
@@ -986,7 +1542,7 @@ namespace TinyTween
 
                 if (tw.type == TinyTweenType.CustomFloat)
                 {
-                    float v = Mathf.LerpUnclamped(tw.customFloatFrom, tw.customFloatTo, k);
+                    float v = EvaluateCustomFloatValue(tw, k, cycleIndexL, cycleIndex, parity);
 
                     var setter = tw.customFloatSetter;
                     if (setter != null)
@@ -1083,11 +1639,8 @@ namespace TinyTween
                 }
                 else if (tw.type == TinyTweenType.PunchScale)
                 {
-                    float punchTime = k * tw.jumpCount * PI * 2f;
-                    float decay = 1f - k;
-                    float finalDecay = decay * decay * decay;
-
-                    Vector3 punchVal = tw.punch * (Mathf.Sin(punchTime) * finalDecay);
+                    float punchFactor = EvaluatePunchFactor(progress, k, tw.jumpCount);
+                    Vector3 punchVal = tw.punch * punchFactor;
                     tw.target.localScale = tw.baseStartPos + punchVal;
                 }
                 else
@@ -1122,10 +1675,8 @@ namespace TinyTween
                     }
                     else if (tw.type == TinyTweenType.Punch)
                     {
-                        float punchTime = k * tw.jumpCount * PI * 2f;
-                        float decay = 1f - k;
-                        float finalDecay = decay * decay * decay;
-                        result = tw.baseStartPos + (tw.punch * (Mathf.Sin(punchTime) * finalDecay));
+                        float punchFactor = EvaluatePunchFactor(progress, k, tw.jumpCount);
+                        result = tw.baseStartPos + (tw.punch * punchFactor);
                     }
 
                     if (tw.useLocal) tw.target.localPosition = result;
@@ -1176,6 +1727,14 @@ namespace TinyTween
 
     public static class TinyTweener
     {
+        // Call once during boot to create the runner and prefill the tween pool.
+        public static void Warmup(int tweenCapacity = 64)
+        {
+            var runner = TinyTweenRunner.InstanceOrNull;
+            if (runner == null) return;
+            runner.Warmup(tweenCapacity);
+        }
+
         public static TinySequence Sequence() => new TinySequence();
 
         static TinyTweenHandle StartSafe(
@@ -1194,11 +1753,11 @@ namespace TinyTween
             TinyRotateMode rotateMode,
             float jumpHeight = 0f,
             int jumpCount = 0,
-            Vector3 punchVector = default,
+            Vector3 punchVector = default(Vector3),
             Action<float> customSetter = null)
         {
             var runner = TinyTweenRunner.InstanceOrNull;
-            if (runner == null) return default;
+            if (runner == null) return default(TinyTweenHandle);
 
             return runner.StartTween(
                 target,
@@ -1222,31 +1781,31 @@ namespace TinyTween
 
         public static TinyTweenHandle Move(Transform target, Vector3 startValue, Vector3 endValue, float duration, bool useLocal = false)
         {
-            if (target == null) return default;
+            if (target == null) return default(TinyTweenHandle);
             return StartSafe(target, startValue, endValue, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Move, useLocal, false, false, Vector3.zero, Vector3.zero, TinyRotateMode.QuaternionTo);
         }
 
         public static TinyTweenHandle MoveTo(Transform target, Vector3 endValue, float duration, bool useLocal = false)
         {
-            if (target == null) return default;
+            if (target == null) return default(TinyTweenHandle);
             return StartSafe(target, Vector3.zero, endValue, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Move, useLocal, true, false, Vector3.zero, Vector3.zero, TinyRotateMode.QuaternionTo);
         }
 
         public static TinyTweenHandle MoveBy(Transform target, Vector3 amount, float duration, bool useLocal = false)
         {
-            if (target == null) return default;
+            if (target == null) return default(TinyTweenHandle);
             return StartSafe(target, Vector3.zero, Vector3.zero, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Move, useLocal, true, true, amount, Vector3.zero, TinyRotateMode.QuaternionTo);
         }
 
         public static TinyTweenHandle Rotate(Transform target, Quaternion startValue, Quaternion endValue, float duration, bool useLocal = false)
         {
-            if (target == null) return default;
+            if (target == null) return default(TinyTweenHandle);
             return StartSafe(target, Vector3.zero, Vector3.zero, startValue, endValue, duration, TinyTweenType.Rotate, useLocal, false, false, Vector3.zero, Vector3.zero, TinyRotateMode.QuaternionTo);
         }
 
         public static TinyTweenHandle RotateTo(Transform target, Quaternion endValue, float duration, bool useLocal = false)
         {
-            if (target == null) return default;
+            if (target == null) return default(TinyTweenHandle);
             return StartSafe(target, Vector3.zero, Vector3.zero, Quaternion.identity, endValue, duration, TinyTweenType.Rotate, useLocal, true, false, Vector3.zero, Vector3.zero, TinyRotateMode.QuaternionTo);
         }
 
@@ -1255,31 +1814,31 @@ namespace TinyTween
 
         public static TinyTweenHandle RotateBy(Transform target, Vector3 eulerAmount, float duration, bool useLocal = false)
         {
-            if (target == null) return default;
+            if (target == null) return default(TinyTweenHandle);
             return StartSafe(target, Vector3.zero, Vector3.zero, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Rotate, useLocal, true, true, Vector3.zero, eulerAmount, TinyRotateMode.EulerRelative);
         }
 
         public static TinyTweenHandle Jump(Transform target, Vector3 startValue, Vector3 endValue, float height, int count, float duration, bool useLocal = false)
         {
-            if (target == null) return default;
+            if (target == null) return default(TinyTweenHandle);
             return StartSafe(target, startValue, endValue, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Jump, useLocal, false, false, Vector3.zero, Vector3.zero, TinyRotateMode.QuaternionTo, height, count);
         }
 
         public static TinyTweenHandle JumpTo(Transform target, Vector3 endValue, float height, int count, float duration, bool useLocal = false)
         {
-            if (target == null) return default;
+            if (target == null) return default(TinyTweenHandle);
             return StartSafe(target, Vector3.zero, endValue, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Jump, useLocal, true, false, Vector3.zero, Vector3.zero, TinyRotateMode.QuaternionTo, height, count);
         }
 
         public static TinyTweenHandle Punch(Transform target, Vector3 punchVector, float duration, int vibrato = 3, bool useLocal = false)
         {
-            if (target == null) return default;
+            if (target == null) return default(TinyTweenHandle);
             return StartSafe(target, Vector3.zero, Vector3.zero, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.Punch, useLocal, true, false, Vector3.zero, Vector3.zero, TinyRotateMode.QuaternionTo, 0f, vibrato, punchVector);
         }
 
         public static TinyTweenHandle PunchScale(Transform target, Vector3 punchVector, float duration, int vibrato = 3)
         {
-            if (target == null) return default;
+            if (target == null) return default(TinyTweenHandle);
             return StartSafe(target, Vector3.zero, Vector3.zero, Quaternion.identity, Quaternion.identity, duration, TinyTweenType.PunchScale, true, true, false, Vector3.zero, Vector3.zero, TinyRotateMode.QuaternionTo, 0f, vibrato, punchVector);
         }
 
@@ -1301,7 +1860,7 @@ namespace TinyTween
                 TinyRotateMode.QuaternionTo,
                 0f,
                 0,
-                default,
+                default(Vector3),
                 onValue);
         }
     }
